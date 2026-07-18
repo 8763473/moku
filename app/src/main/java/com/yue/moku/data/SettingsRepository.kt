@@ -14,6 +14,7 @@ data class ApiSettings(
     val temperature: Float = 0.7f,
     val systemPrompt: String = "你是一位严谨、富有文学感的中文写作助手。尊重用户给出的设定、语气和格式要求。",
     val stream: Boolean = true,
+    val thinkingMode: Boolean = true,
     val autoRecall: Boolean = true,
     val recallCount: Int = 6,
     val autoCompress: Boolean = true,
@@ -34,6 +35,7 @@ class SettingsRepository(context: Context) {
             putFloat("temperature", value.temperature.coerceIn(0f, 2f))
             putString("system_prompt", value.systemPrompt)
             putBoolean("stream", value.stream)
+            putBoolean("thinking_mode", value.thinkingMode)
             putBoolean("auto_recall", value.autoRecall)
             putInt("recall_count", value.recallCount.coerceIn(1, 20))
             putBoolean("auto_compress", value.autoCompress)
@@ -50,6 +52,7 @@ class SettingsRepository(context: Context) {
         temperature = prefs.getFloat("temperature", ApiSettings().temperature),
         systemPrompt = prefs.getString("system_prompt", null) ?: ApiSettings().systemPrompt,
         stream = prefs.getBoolean("stream", true),
+        thinkingMode = prefs.getBoolean("thinking_mode", true),
         autoRecall = prefs.getBoolean("auto_recall", true),
         recallCount = prefs.getInt("recall_count", 6),
         autoCompress = prefs.getBoolean("auto_compress", true),

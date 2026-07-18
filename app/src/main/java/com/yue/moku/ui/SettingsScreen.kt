@@ -236,6 +236,12 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     onChecked = { draft = draft.copy(stream = it) },
                 )
                 SettingSwitch(
+                    title = "思考模式",
+                    description = "显示模型的推理过程，关闭后只看正文",
+                    checked = draft.thinkingMode,
+                    onChecked = { draft = draft.copy(thinkingMode = it) },
+                )
+                SettingSwitch(
                     title = "自动压缩上下文",
                     description = "当占用超过阈值时自动生成早期对话的摘要",
                     checked = draft.autoCompress,

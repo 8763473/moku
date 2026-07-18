@@ -172,13 +172,15 @@ class AppViewModel(
                 _stream.value = StreamState(assistantId, parsed.content, parsed.reasoning)
                 val elapsedMs = System.currentTimeMillis() - startedAt
                 val elapsedSec = elapsedMs / 1000.0
-                val totalTokens = completionTokens ?: TokenEstimator.estimate(rawContent)
+                val totalTokens = completionTokens
+                    ?: TokenEstimator.estimate(rawContent + rawReasoning)
                 val tps = if (elapsedSec > 0.1) totalTokens / elapsedSec else 0.0
                 _stream.value = _stream.value.copy(tokensPerSecond = tps, elapsedMs = elapsedMs)
             }
             val parsed = ThinkParser.parse(rawContent, rawReasoning)
             val finalElapsed = System.currentTimeMillis() - startedAt
-            val finalTokens = completionTokens ?: TokenEstimator.estimate(rawContent)
+            val finalTokens = completionTokens
+                ?: TokenEstimator.estimate(rawContent + rawReasoning)
             val finalTps = if (finalElapsed > 100) finalTokens / (finalElapsed / 1000.0) else 0.0
             _stream.value = _stream.value.copy(
                 tokensPerSecond = finalTps,

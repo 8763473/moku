@@ -28,3 +28,8 @@ google-services.json
 
 # zcode (this CLI's metadata)
 .zcode/
+
+# Built APKs
+moku-*.apk
+*.apk
+!gradle-wrapper.jar

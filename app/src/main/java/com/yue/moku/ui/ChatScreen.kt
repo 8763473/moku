@@ -73,12 +73,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,6 +100,8 @@ import com.yue.moku.domain.ContextBuilder
 import com.yue.moku.domain.KnowledgeRetriever
 import com.yue.moku.domain.TokenEstimator
 import com.yue.moku.domain.formatTokens
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -140,18 +142,44 @@ fun ChatScreen(viewModel: AppViewModel) {
         )
     }
     val usedTokens = breakdown.estimatedPromptTokens
-    val isAtBottom by remember {
-        derivedStateOf {
+    // 是否跟随到底部（最新内容）。用户主动往上滚之后关闭，回到底部后重新开启。
+    var stickToBottom by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow {
             val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()
-            last != null && last.index >= info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset + 8
+            if (info.totalItemsCount == 0) -1
+            else info.visibleItemsInfo.lastOrNull()?.index ?: -1
+        }.distinctUntilChanged().collect { lastVisible ->
+            if (messages.isNotEmpty()) {
+                stickToBottom = lastVisible >= messages.lastIndex
+            }
         }
     }
     LaunchedEffect(messages.size, activeId) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        if (messages.isNotEmpty()) {
+            stickToBottom = true
+            listState.animateScrollToItem(messages.lastIndex)
+        }
     }
-    LaunchedEffect(stream.content.length, stream.reasoning.length) {
-        if (messages.isNotEmpty() && isAtBottom) listState.animateScrollToItem(messages.lastIndex)
+    // 流式生成时，把最新内容贴到视口底部——这样即使消息变得比视口还高，
+    // 也总是显示正在输出的那一段。
+    LaunchedEffect(stream) {
+        snapshotFlow { stream.content.length to stream.reasoning.length }
+            .map { it.first + it.second }
+            .distinctUntilChanged()
+            .collect {
+                if (messages.isEmpty()) return@collect
+                if (!stickToBottom) return@collect
+                val info = listState.layoutInfo
+                val viewportEnd = info.viewportEndOffset
+                val lastItem = info.visibleItemsInfo.firstOrNull { it.index == messages.lastIndex }
+                if (lastItem != null) {
+                    val overflow = (lastItem.offset + lastItem.size) - viewportEnd
+                    if (overflow > 0) listState.scrollBy(overflow.toFloat())
+                } else if (generating) {
+                    listState.animateScrollToItem(messages.lastIndex)
+                }
+            }
     }
     LaunchedEffect(compressionNotice) {
         compressionNotice?.let { notice ->
@@ -277,6 +305,7 @@ fun ChatScreen(viewModel: AppViewModel) {
                                 MessageCard(
                                     shown,
                                     generating && message.id == stream.messageId,
+                                    showReasoning = settings.thinkingMode,
                                     onDelete = { pendingDelete = message },
                                     onEdit = if (!generating && message.role == "user") { -> editingMessage = message } else null,
                                     onRegenerate = if (!generating) { -> pendingRegenerate = if (message.role == "user") RegenerateTarget.User(message) else RegenerateTarget.Ai(message) } else null,
@@ -287,9 +316,12 @@ fun ChatScreen(viewModel: AppViewModel) {
                                 )
                             }
                         }
-                        if (!isAtBottom && messages.isNotEmpty()) {
+                        if (!stickToBottom && messages.isNotEmpty()) {
                             SmallFloatingActionButton(
-                                onClick = { scope.launch { listState.animateScrollToItem(messages.lastIndex) } },
+                                onClick = {
+                                    stickToBottom = true
+                                    scope.launch { listState.animateScrollToItem(messages.lastIndex) }
+                                },
                                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                             ) { Icon(Icons.Default.KeyboardArrowDown, "回到最新") }
                         }
@@ -451,6 +483,7 @@ private fun EmptyChat(modifier: Modifier = Modifier) {
 private fun MessageCard(
     message: MessageEntity,
     streaming: Boolean,
+    showReasoning: Boolean = true,
     onDelete: () -> Unit,
     onEdit: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
@@ -475,7 +508,7 @@ private fun MessageCard(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
     ) {
-        if (!isUser && message.reasoning.isNotBlank()) {
+        if (!isUser && showReasoning && message.reasoning.isNotBlank()) {
             Card(
                 onClick = { reasoningOpen = !reasoningOpen },
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)),
@@ -558,8 +591,10 @@ private fun MessageCard(
                         }
                         val showTps = streaming && tokensPerSecond > 0
                         val showElapsed = streaming || message.generationMs != null
-                        val historicalTps: Double? = if (message.completionTokens != null && (message.generationMs ?: 0) > 100) {
-                            message.completionTokens.toDouble() / ((message.generationMs ?: 0) / 1000.0)
+                        val historicalTps: Double? = if ((message.generationMs ?: 0) > 100) {
+                            val tokens = message.completionTokens
+                                ?: TokenEstimator.estimate(message.content + message.reasoning)
+                            if (tokens > 0) tokens.toDouble() / ((message.generationMs ?: 1000) / 1000.0) else null
                         } else null
                         val tpsToShow = if (streaming) tokensPerSecond else (historicalTps ?: 0.0)
                         val elapsedMsFinal = if (streaming) elapsedMs else (message.generationMs ?: 0L)
