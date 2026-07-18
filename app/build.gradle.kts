@@ -21,9 +21,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
 
-        buildConfigField("String", "GITHUB_OWNER", "\"Yue-cn\"")
+        buildConfigField("String", "GITHUB_OWNER", "\"8763473\"")
         buildConfigField("String", "GITHUB_REPO", "\"moku\"")
-        buildConfigField("String", "UPDATE_CHECK_URL", "\"https://api.github.com/repos/Yue-cn/moku/releases/latest\"")
+        buildConfigField("String", "UPDATE_CHECK_URL", "\"https://api.github.com/repos/8763473/moku/releases/latest\"")
     }
 
     buildTypes {
