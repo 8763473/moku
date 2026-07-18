@@ -9,8 +9,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yue.moku.ui.MoKuApp
 import com.yue.moku.ui.MoKuTheme
+import com.yue.moku.util.ApkInstaller
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels {
@@ -35,6 +39,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
+            val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+            LaunchedEffect(updateState) {
+                (updateState as? AppViewModel.UpdateState.Ready)?.let { state ->
+                    ApkInstaller.install(this@MainActivity, state.apkFile)
+                    viewModel.consumeUpdateState()
+                }
+            }
             MoKuTheme { MoKuApp(viewModel) }
         }
     }

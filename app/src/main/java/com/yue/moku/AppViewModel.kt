@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.yue.moku.data.ApiSettings
 import com.yue.moku.data.ConversationEntity
+import com.yue.moku.data.GitHubRelease
 import com.yue.moku.data.KnowledgeEntity
 import com.yue.moku.data.MessageEntity
 import com.yue.moku.domain.ContextBuilder
@@ -39,6 +40,16 @@ class AppViewModel(
     private val container: AppContainer,
     private val appContext: android.content.Context,
 ) : ViewModel() {
+
+    sealed class UpdateState {
+        object Idle : UpdateState()
+        object Checking : UpdateState()
+        object UpToDate : UpdateState()
+        data class Available(val release: GitHubRelease) : UpdateState()
+        data class Downloading(val progress: Float) : UpdateState()
+        data class Ready(val apkFile: java.io.File) : UpdateState()
+        data class Error(val message: String) : UpdateState()
+    }
     private val conversationDao = container.database.conversationDao()
     private val messageDao = container.database.messageDao()
     private val knowledgeDao = container.database.knowledgeDao()
@@ -73,6 +84,10 @@ class AppViewModel(
     private val _compressionNotice = MutableStateFlow<CompressionNotice?>(null)
     val compressionNotice: StateFlow<CompressionNotice?> = _compressionNotice.asStateFlow()
     fun consumeCompressionNotice() { _compressionNotice.value = null }
+    private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
+    val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
+    fun consumeUpdateState() { _updateState.value = UpdateState.Idle }
+    private val _lastUpdateCheck = MutableStateFlow(0L)
     private var generationJob: Job? = null
 
     init {
@@ -352,6 +367,57 @@ class AppViewModel(
             raw.isNotBlank() -> raw
             else -> "请求失败，请检查 API 配置。"
         }
+    }
+
+    fun checkForUpdate(force: Boolean = false) = viewModelScope.launch {
+        if (!force) {
+            val now = System.currentTimeMillis()
+            if (now - _lastUpdateCheck.value < 24L * 60 * 60 * 1000L) return@launch
+        }
+        _lastUpdateCheck.value = System.currentTimeMillis()
+        _updateState.value = UpdateState.Checking
+        runCatching { container.update.fetchLatest(com.yue.moku.BuildConfig.UPDATE_CHECK_URL) }
+            .onSuccess { release ->
+                val latestTag = release.tagName.removePrefix("v").removePrefix("V")
+                val currentVer = com.yue.moku.BuildConfig.VERSION_NAME
+                if (isNewer(latestTag, currentVer)) {
+                    _updateState.value = UpdateState.Available(release)
+                } else {
+                    _updateState.value = UpdateState.UpToDate
+                }
+            }
+            .onFailure { _updateState.value = UpdateState.Error(friendlyError(it)) }
+    }
+
+    fun downloadAndInstall() = viewModelScope.launch {
+        val release = (_updateState.value as? UpdateState.Available)?.release ?: return@launch
+        val apkUrl = release.apkUrl
+        if (apkUrl.isNullOrBlank()) {
+            _updateState.value = UpdateState.Error("该 release 没有 APK 资源，无法直接下载")
+            return@launch
+        }
+        _updateState.value = UpdateState.Downloading(0f)
+        val outFile = java.io.File(appContext.cacheDir, "updates/moku-update.apk")
+        runCatching {
+            container.update.downloadApk(apkUrl, outFile) { downloaded, total ->
+                val progress = if (total > 0) downloaded.toFloat() / total else 0f
+                _updateState.value = UpdateState.Downloading(progress)
+            }
+        }
+            .onSuccess { file -> _updateState.value = UpdateState.Ready(file) }
+            .onFailure { _updateState.value = UpdateState.Error(friendlyError(it)) }
+    }
+
+    private fun isNewer(latest: String, current: String): Boolean {
+        val l = latest.split(".").mapNotNull { it.toIntOrNull() }
+        val c = current.split(".").mapNotNull { it.toIntOrNull() }
+        for (i in 0 until maxOf(l.size, c.size)) {
+            val a = l.getOrNull(i) ?: 0
+            val b = c.getOrNull(i) ?: 0
+            if (a > b) return true
+            if (a < b) return false
+        }
+        return false
     }
 
     class Factory(

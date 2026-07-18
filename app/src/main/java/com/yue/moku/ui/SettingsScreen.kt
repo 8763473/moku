@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AssistChip
@@ -69,6 +70,7 @@ fun SettingsScreen(viewModel: AppViewModel) {
     var showKey by remember { mutableStateOf(false) }
     val modelDetails by viewModel.modelDetails.collectAsStateWithLifecycle()
     val isLmStudio by viewModel.isLmStudio.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     var modelMenuExpanded by remember { mutableStateOf(false) }
 
     fun normalized(): ApiSettings = draft.copy(
@@ -296,6 +298,25 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     Icon(Icons.Outlined.Compress, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("立即压缩当前会话")
+                }
+                // 更新检查
+                if (updateState !is AppViewModel.UpdateState.Idle) {
+                    Spacer(Modifier.height(10.dp))
+                    UpdateBanner(
+                        state = updateState,
+                        onCheck = { viewModel.checkForUpdate(force = true) },
+                        onDownload = { viewModel.downloadAndInstall() },
+                        onDismiss = { viewModel.consumeUpdateState() },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { viewModel.checkForUpdate(force = true) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.SystemUpdate, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("检查更新")
                 }
                 Spacer(Modifier.height(20.dp))
             }

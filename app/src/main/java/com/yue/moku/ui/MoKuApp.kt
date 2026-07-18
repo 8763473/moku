@@ -41,6 +41,9 @@ fun MoKuApp(viewModel: AppViewModel) {
             viewModel.consumeNotice()
         }
     }
+    LaunchedEffect(Unit) {
+        viewModel.checkForUpdate(force = false)
+    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
