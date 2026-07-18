@@ -69,7 +69,7 @@ jobs:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
           name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag || 'Manual Build' }}
           generate_release_notes: true
-          draft: true
+          draft: false
           prerelease: false
           files: |
             app-debug-*.apk
