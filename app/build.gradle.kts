@@ -26,9 +26,21 @@ android {
         buildConfigField("String", "UPDATE_CHECK_URL", "\"https://api.github.com/repos/8763473/moku/releases/latest\"")
     }
 
+    signingConfigs {
+        // 当 GitHub Actions 注入 KEYSTORE_PATH 时使用正式签名，否则不创建
+        System.getenv("KEYSTORE_PATH")?.let { keystorePath ->
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

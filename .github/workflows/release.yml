@@ -33,35 +33,39 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Decode keystore (if secrets present)
+      - name: Decode keystore
         id: keystore
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > app/release.keystore
           echo "KEYSTORE_PATH=app/release.keystore" >> $GITHUB_OUTPUT
-          echo "KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_OUTPUT
-          echo "KEY_PASSWORD=$KEY_PASSWORD" >> $GITHUB_OUTPUT
-        continue-on-error: true
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-
-      - name: Build Release APK (if keystore available)
+      - name: Build Release APK
         if: ${{ steps.keystore.outputs.KEYSTORE_PATH != '' }}
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease
-        continue-on-error: true
+
+      - name: Build Debug APK (fallback)
+        if: ${{ steps.keystore.outputs.KEYSTORE_PATH == '' }}
+        run: ./gradlew assembleDebug
 
       - name: Rename APK with version
         id: rename
         run: |
           VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | cut -d'"' -f2 | tr -d '\r')
           echo "Detected version: $VERSION"
-          cp app/build/outputs/apk/debug/app-debug.apk "app-debug-v${VERSION}.apk"
-          echo "APK_NAME=app-debug-v${VERSION}.apk" >> $GITHUB_OUTPUT
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk "moku-v${VERSION}.apk"
+          else
+            cp app/build/outputs/apk/debug/app-debug.apk "moku-v${VERSION}.apk"
+          fi
+          echo "APK_NAME=moku-v${VERSION}.apk" >> $GITHUB_OUTPUT
 
       - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
@@ -72,8 +76,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            app-debug-*.apk
-            app/build/outputs/apk/release/*.apk
-          fail_on_unmatched_files: false
+            moku-v*.apk
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
