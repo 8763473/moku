@@ -67,5 +67,52 @@ class ChatToolsTest {
         assertEquals(history.last().content, result.messages.last().content)
         assertTrue(result.messages.size < history.size + 1)
     }
+
+    // ------- KnowledgeWriteIntent -------
+
+    @Test
+    fun `write intent matches explicit save-to-knowledge phrasing`() {
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("把这条加到知识库：小碳的性格是温和但固执"))
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("以下设定请记入知识库：林舟，28 岁，机修工"))
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("存到知识库：王城在北方平原上"))
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("把人物简介写进知识库"))
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("加进知识库吧"))
+        assertTrue(KnowledgeWriteIntent.isWriteRequest("建议存进知识库"))
+    }
+
+    @Test
+    fun `write intent rejects normal conversation`() {
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("续写林舟修理机器的场景"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("帮我把这一段润色一下"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("知识库里说的小碳是乐观派对吧？"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest(""))
+    }
+
+    @Test
+    fun `write intent rejects anti-patterns and read-only queries`() {
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("请读取知识库的人物设定"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("查询知识库"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("删除知识库中过期的条目"))
+        assertFalse(KnowledgeWriteIntent.isWriteRequest("不要写入知识库"))
+    }
+
+    @Test
+    fun `save_knowledge tool schema has required fields`() {
+        val schema = KnowledgeWriteIntent.buildToolSchema()
+        val function = schema.getJSONObject("function")
+        assertEquals("save_knowledge", function.getString("name"))
+        val params = function.getJSONObject("parameters")
+        val required = params.getJSONArray("required")
+        assertEquals("title", required.getString(0))
+        assertEquals("content", required.getString(1))
+        // properties 必须含 title/content/category/tags/isPinned
+        val props = params.getJSONObject("properties")
+        listOf("title", "content", "category", "tags", "isPinned").forEach {
+            assertTrue("missing property: $it", props.has(it))
+        }
+        // category enum 包含 4 个分类
+        val categories = props.getJSONObject("category").getJSONArray("enum")
+        assertEquals(4, categories.length())
+    }
 }
 

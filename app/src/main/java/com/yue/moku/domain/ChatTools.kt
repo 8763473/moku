@@ -2,6 +2,8 @@ package com.yue.moku.domain
 
 import com.yue.moku.data.KnowledgeEntity
 import com.yue.moku.data.MessageEntity
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 import kotlin.math.ceil
 
@@ -136,4 +138,108 @@ fun formatTokens(value: Int): String = when {
     value >= 1_000_000 -> String.format(Locale.getDefault(), "%.1fM", value / 1_000_000f)
     value >= 1_000 -> String.format(Locale.getDefault(), "%.1fK", value / 1_000f)
     else -> value.toString()
+}
+
+/**
+ * 判断用户当前消息是否构成"写入知识库"的明确指令。
+ *
+ * 设计原则：宁可漏判（漏判时 AI 拿不到 save_knowledge 工具，物理上无法写入），
+ * 也不要误判（误判时 AI 可能借机把没授权的内容塞进知识库）。
+ *
+ * 因此这里用强白名单：必须出现明确的"动作 + 目标"组合才返回 true。
+ */
+object KnowledgeWriteIntent {
+
+    /** 触发动作词：必须是"加入/记入/保存到/写进/存到/存进/加进/放进"等写入性动词 */
+    private val writeActions = listOf(
+        "加入", "记入", "存到", "存进", "保存到", "保存进", "写进", "写到",
+        "记到", "记进", "加进", "放进", "录入", "收录到", "添加到", "添加进",
+    )
+
+    /** 写入目标：必须是"知识库"或"设定"。设定也属于知识库的一种调用类别，等同写入 */
+    private val writeTargets = listOf("知识库", "设定库")
+
+    /** 反歧义黑名单：如果命中说明不是写入指令，提前返回 false */
+    private val ambiguousBlacklist = listOf(
+        "读取知识库", "查询知识库", "看一下知识库", "看看知识库",
+        "删除知识库", "清空知识库", "调出知识库", "不要写入知识库",
+        "别写入知识库", "不要加入知识库",
+    )
+
+    /**
+     * @return true 仅当消息同时含 (动作词) + (目标词) 且未被黑名单覆盖。
+     *          动作与目标之间允许出现最多 4 个字符（如"把 X 加到 知识库"）。
+     */
+    fun isWriteRequest(userText: String): Boolean {
+        val text = userText.trim()
+        if (text.isEmpty()) return false
+
+        // 反歧义黑名单（包含变体如"读取/查询/不要"）
+        for (pattern in ambiguousBlacklist) {
+            if (text.contains(pattern)) return false
+        }
+
+        for (action in writeActions) {
+            val actionIdx = text.indexOf(action)
+            if (actionIdx < 0) continue
+            for (target in writeTargets) {
+                val targetIdx = text.indexOf(target, actionIdx + action.length)
+                if (targetIdx < 0) continue
+                val gap = targetIdx - (actionIdx + action.length)
+                // 动作与目标之间最多间隔 4 个字符，否则视为无关短语
+                if (gap in 0..4) return true
+                // "把这条加到知识库"：把 X 加到 知识库 -> hit "加到"
+                // 但 "加" 不在 writeActions 里——补一个独立分支覆盖"加到"
+            }
+        }
+
+        // 兜底：常见的 "加到/放进知识库" 模式（带"到"字）
+        val toPattern = Regex("(加到|放进?到|记到|写到|存到|保存到).{0,4}(知识库|设定库)")
+        return toPattern.containsMatchIn(text)
+    }
+
+    /** 返回 save_knowledge 工具的 OpenAI function-calling schema */
+    fun buildToolSchema(): JSONObject = JSONObject().apply {
+        put("type", "function")
+        put("function", JSONObject().apply {
+            put("name", "save_knowledge")
+            put("description", "将一条信息保存到本地写作知识库。仅当用户在当前消息里明确要求将其记入/保存/加入知识库时才调用；不要凭用户未明示的内容自行触发。")
+            put("parameters", JSONObject().apply {
+                put("type", "object")
+                put("required", JSONArray().apply { put("title"); put("content") })
+                put("properties", JSONObject().apply {
+                    put("title", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "条目标题，简短标签，例如'小碳的性格'")
+                    })
+                    put("content", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "条目内容，使用用户原话或最小精简版本，不要自行添补用户未给出的信息")
+                    })
+                    put("category", JSONObject().apply {
+                        put("type", "string")
+                        put("enum", JSONArray().apply {
+                            listOf("要求", "设定", "人物", "资料").forEach { put(it) }
+                        })
+                        put("description", "默认'设定'。要求=写作风格/规则、设定=世界观/条件、人物=角色、资料=参考材料")
+                    })
+                    put("tags", JSONObject().apply {
+                        put("type", "string")
+                        put("description", "可选，逗号分隔的标签")
+                    })
+                    put("isPinned", JSONObject().apply {
+                        put("type", "boolean")
+                        put("description", "可选，是否每次固定调用，默认 false。仅当用户明确要求'每次都用'时设为 true")
+                    })
+                })
+            })
+        })
+    }
+
+    /** 当本轮携带工具时附加在 system prompt 后的引导语 */
+    fun systemPromptHint(): String =
+        "本轮用户提供了适合写入知识库的内容。请按以下规则使用 save_knowledge 工具：" +
+            "1) 仅在用户明确要求写入时调用；2) title 用简短标签（≤12 字），" +
+            "content 用用户原话或最小精简，不要替用户编造或补全未给出的信息；" +
+            "3) 调用后用一句话向用户报告"已保存：xxx"。"
 }

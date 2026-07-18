@@ -275,6 +275,13 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     singleLine = true,
                     enabled = draft.autoRecall,
                 )
+                Spacer(Modifier.height(4.dp))
+                SettingSwitch(
+                    title = "AI 可写入知识库",
+                    description = "仅当本条目消息中明确要求\"记入/加入/保存到知识库\"时，AI 才会通过工具把内容存进去",
+                    checked = draft.allowAiWriteKnowledge,
+                    onChecked = { draft = draft.copy(allowAiWriteKnowledge = it) },
+                )
             }
 
             item {

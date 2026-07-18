@@ -19,6 +19,7 @@ data class ApiSettings(
     val recallCount: Int = 6,
     val autoCompress: Boolean = true,
     val compressThreshold: Float = 0.8f,
+    val allowAiWriteKnowledge: Boolean = false,
 )
 
 class SettingsRepository(context: Context) {
@@ -40,6 +41,7 @@ class SettingsRepository(context: Context) {
             putInt("recall_count", value.recallCount.coerceIn(1, 20))
             putBoolean("auto_compress", value.autoCompress)
             putFloat("compress_threshold", value.compressThreshold)
+            putBoolean("allow_ai_write_knowledge", value.allowAiWriteKnowledge)
         }
         _settings.value = load()
     }
@@ -57,5 +59,6 @@ class SettingsRepository(context: Context) {
         recallCount = prefs.getInt("recall_count", 6),
         autoCompress = prefs.getBoolean("auto_compress", true),
         compressThreshold = prefs.getFloat("compress_threshold", 0.8f),
+        allowAiWriteKnowledge = prefs.getBoolean("allow_ai_write_knowledge", false),
     )
 }

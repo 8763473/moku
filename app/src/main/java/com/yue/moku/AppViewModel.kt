@@ -148,8 +148,16 @@ class AppViewModel(
         } else emptyList()
         _retrieved.value = matches
         val history = messageDao.listForConversation(conversationId)
+        val isWriteIntent = currentSettings.allowAiWriteKnowledge &&
+            com.yue.moku.domain.KnowledgeWriteIntent.isWriteRequest(prompt)
+        val tools = if (isWriteIntent) listOf(com.yue.moku.domain.KnowledgeWriteIntent.buildToolSchema()) else null
+        val systemPrompt = if (tools != null) {
+            currentSettings.systemPrompt + "\n\n" + com.yue.moku.domain.KnowledgeWriteIntent.systemPromptHint()
+        } else {
+            currentSettings.systemPrompt
+        }
         val context = ContextBuilder.build(
-            systemPrompt = currentSettings.systemPrompt,
+            systemPrompt = systemPrompt,
             memoryPrompt = KnowledgeRetriever.toPrompt(matches),
             history = history,
             contextWindow = currentSettings.contextWindow,
@@ -162,12 +170,17 @@ class AppViewModel(
         var rawReasoning = ""
         var promptTokens: Int? = null
         var completionTokens: Int? = null
+        // 工具调用累加器：流式响应里 tool_calls.arguments 会分多片到达
+        var toolCallName: String? = null
+        var toolCallArgJson = StringBuilder()
         try {
-            container.api.chat(currentSettings, context.messages).collect { delta ->
+            container.api.chat(currentSettings, context.messages, tools = tools).collect { delta ->
                 rawContent += delta.content
                 rawReasoning += delta.reasoning
                 promptTokens = delta.promptTokens ?: promptTokens
                 completionTokens = delta.completionTokens ?: completionTokens
+                if (!delta.toolCallName.isNullOrBlank()) toolCallName = delta.toolCallName
+                delta.toolCallArgumentsChunk?.let { toolCallArgJson.append(it) }
                 val parsed = ThinkParser.parse(rawContent, rawReasoning)
                 _stream.value = StreamState(assistantId, parsed.content, parsed.reasoning)
                 val elapsedMs = System.currentTimeMillis() - startedAt
@@ -187,6 +200,10 @@ class AppViewModel(
                 elapsedMs = finalElapsed,
                 stopReason = "生成完成",
             )
+            // 工具调用处理：模型只在用户明确要求写入时才会拿到 save_knowledge 工具
+            if (toolCallName == "save_knowledge") {
+                handleSaveKnowledgeToolCall(toolCallArgJson.toString())
+            }
             messageDao.update(MessageEntity(
                 id = assistantId,
                 conversationId = conversationId,
@@ -369,6 +386,40 @@ class AppViewModel(
             raw.isNotBlank() -> raw
             else -> "请求失败，请检查 API 配置。"
         }
+    }
+
+    /** 解析并执行 save_knowledge 工具调用。arguments 是模型给出的 JSON 字符串。 */
+    private suspend fun handleSaveKnowledgeToolCall(argumentsJson: String) {
+        if (argumentsJson.isBlank()) {
+            _notice.value = "AI 试图写入知识库，但参数为空，已忽略"
+            return
+        }
+        val args = try {
+            org.json.JSONObject(argumentsJson)
+        } catch (t: Throwable) {
+            _notice.value = "AI 试图写入知识库但参数解析失败，已忽略"
+            return
+        }
+        val title = args.optString("title", "").trim()
+        val content = args.optString("content", "").trim()
+        if (title.isEmpty() || content.isEmpty()) {
+            _notice.value = "AI 试图写入知识库但缺少标题或内容，已忽略"
+            return
+        }
+        val category = args.optString("category", "设定").takeUnless { it.isBlank() } ?: "设定"
+        val tags = args.optString("tags", "").trim()
+        val isPinned = args.optBoolean("isPinned", false)
+        val now = System.currentTimeMillis()
+        val entity = KnowledgeEntity(
+            title = title.take(64),
+            content = content.take(4000),
+            category = category,
+            tags = tags,
+            isPinned = isPinned,
+            updatedAt = now,
+        )
+        knowledgeDao.upsert(entity)
+        _notice.value = "AI 已写入知识库：$title"
     }
 
     fun checkForUpdate(force: Boolean = false) = viewModelScope.launch {

@@ -22,6 +22,10 @@ import java.util.concurrent.TimeUnit
 data class ApiDelta(
     val content: String = "",
     val reasoning: String = "",
+    val toolCallId: String? = null,
+    val toolCallName: String? = null,
+    /** 增量工具参数 JSON 片段，需要调用方累加拼接 */
+    val toolCallArgumentsChunk: String? = null,
     val promptTokens: Int? = null,
     val completionTokens: Int? = null,
 )
@@ -33,7 +37,12 @@ class ChatApiClient {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    fun chat(settings: ApiSettings, messages: List<ApiMessage>): Flow<ApiDelta> = callbackFlow {
+    fun chat(
+        settings: ApiSettings,
+        messages: List<ApiMessage>,
+        tools: List<JSONObject>? = null,
+        toolChoice: String? = null,
+    ): Flow<ApiDelta> = callbackFlow {
         val payload = JSONObject().apply {
             put("model", settings.model)
             put("temperature", settings.temperature.toDouble())
@@ -43,6 +52,8 @@ class ChatApiClient {
                     put(JSONObject().put("role", message.role).put("content", message.content))
                 }
             })
+            if (!tools.isNullOrEmpty()) put("tools", JSONArray(tools))
+            if (!tools.isNullOrEmpty() && toolChoice != null) put("tool_choice", toolChoice)
         }
         val request = Request.Builder()
             .url(chatUrl(settings.baseUrl))
@@ -158,20 +169,33 @@ class ChatApiClient {
         val choice = json.optJSONArray("choices")?.optJSONObject(0)
         val delta = choice?.optJSONObject("delta") ?: JSONObject()
         val usage = json.optJSONObject("usage")
+        val toolCall = delta.optJSONArray("tool_calls")?.optJSONObject(0)
+        val toolFunction = toolCall?.optJSONObject("function")
         return ApiDelta(
             content = delta.optString("content", "").takeUnless { it == "null" }.orEmpty(),
             reasoning = reasoningText(delta),
+            toolCallId = toolCall?.optString("id").takeUnless { it.isNullOrBlank() || it == "null" },
+            toolCallName = toolFunction?.optString("name").takeUnless { it.isNullOrBlank() || it == "null" },
+            toolCallArgumentsChunk = toolFunction?.optString("arguments", "")
+                .takeUnless { it.isNullOrBlank() || it == "null" },
             promptTokens = usage?.optIntOrNull("prompt_tokens"),
             completionTokens = usage?.optIntOrNull("completion_tokens"),
         )
     }
 
     private fun parseFull(json: JSONObject): ApiDelta {
-        val message = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") ?: JSONObject()
+        val choice = json.optJSONArray("choices")?.optJSONObject(0)
+        val message = choice?.optJSONObject("message") ?: JSONObject()
         val usage = json.optJSONObject("usage")
+        val toolCall = message.optJSONArray("tool_calls")?.optJSONObject(0)
+        val toolFunction = toolCall?.optJSONObject("function")
         return ApiDelta(
             content = message.optString("content", ""),
             reasoning = reasoningText(message),
+            toolCallId = toolCall?.optString("id").takeUnless { it.isNullOrBlank() || it == "null" },
+            toolCallName = toolFunction?.optString("name").takeUnless { it.isNullOrBlank() || it == "null" },
+            toolCallArgumentsChunk = toolFunction?.optString("arguments", "")
+                .takeUnless { it.isNullOrBlank() || it == "null" },
             promptTokens = usage?.optIntOrNull("prompt_tokens"),
             completionTokens = usage?.optIntOrNull("completion_tokens"),
         )

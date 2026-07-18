@@ -120,6 +120,7 @@ fun ChatScreen(viewModel: AppViewModel) {
     var pendingRegenerate by remember { mutableStateOf<RegenerateTarget?>(null) }
     val compressing by viewModel.isCompressing.collectAsStateWithLifecycle()
     val compressionNotice by viewModel.compressionNotice.collectAsStateWithLifecycle()
+    val notice by viewModel.notice.collectAsStateWithLifecycle()
     var previewingSummary by remember { mutableStateOf<String?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -192,6 +193,12 @@ fun ChatScreen(viewModel: AppViewModel) {
                 previewingSummary = notice.summary
             }
             viewModel.consumeCompressionNotice()
+        }
+    }
+    LaunchedEffect(notice) {
+        if (!notice.isNullOrBlank()) {
+            snackbar.showSnackbar(message = notice, duration = SnackbarDuration.Short)
+            viewModel.consumeNotice()
         }
     }
 
