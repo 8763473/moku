@@ -58,7 +58,8 @@ jobs:
       - name: Rename APK with version
         id: rename
         run: |
-          VERSION=$(grep '^versionName' app/build.gradle.kts | cut -d'"' -f2)
+          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | cut -d'"' -f2 | tr -d '\r')
+          echo "Detected version: $VERSION"
           cp app/build/outputs/apk/debug/app-debug.apk "app-debug-v${VERSION}.apk"
           echo "APK_NAME=app-debug-v${VERSION}.apk" >> $GITHUB_OUTPUT
 
