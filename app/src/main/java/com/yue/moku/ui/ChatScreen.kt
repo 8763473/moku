@@ -176,7 +176,7 @@ fun ChatScreen(viewModel: AppViewModel) {
                 val lastItem = info.visibleItemsInfo.firstOrNull { it.index == messages.lastIndex }
                 if (lastItem != null) {
                     val overflow = (lastItem.offset + lastItem.size) - viewportEnd
-                    if (overflow > 0) listState.scrollBy(overflow.toFloat())
+                    if (overflow > 0) listState.animateScrollToItem(messages.lastIndex)
                 } else if (generating) {
                     listState.animateScrollToItem(messages.lastIndex)
                 }
@@ -196,8 +196,8 @@ fun ChatScreen(viewModel: AppViewModel) {
         }
     }
     LaunchedEffect(notice) {
-        if (!notice.isNullOrBlank()) {
-            snackbar.showSnackbar(message = notice, duration = SnackbarDuration.Short)
+        notice?.let { message ->
+            snackbar.showSnackbar(message = message, duration = SnackbarDuration.Short)
             viewModel.consumeNotice()
         }
     }
