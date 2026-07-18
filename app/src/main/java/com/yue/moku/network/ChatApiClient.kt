@@ -1,0 +1,209 @@
+package com.yue.moku.network
+
+import com.yue.moku.data.ApiSettings
+import com.yue.moku.domain.ApiMessage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+data class ApiDelta(
+    val content: String = "",
+    val reasoning: String = "",
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+)
+
+class ChatApiClient {
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    fun chat(settings: ApiSettings, messages: List<ApiMessage>): Flow<ApiDelta> = callbackFlow {
+        val payload = JSONObject().apply {
+            put("model", settings.model)
+            put("temperature", settings.temperature.toDouble())
+            put("stream", settings.stream)
+            put("messages", JSONArray().apply {
+                messages.forEach { message ->
+                    put(JSONObject().put("role", message.role).put("content", message.content))
+                }
+            })
+        }
+        val request = Request.Builder()
+            .url(chatUrl(settings.baseUrl))
+            .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
+            .header("Accept", if (settings.stream) "text/event-stream" else "application/json")
+            .post(payload.toString().toRequestBody(JSON_MEDIA))
+            .build()
+        val call = client.newCall(request)
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                close(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!it.isSuccessful) {
+                        val body = it.body?.string().orEmpty()
+                        close(IOException("API ${it.code}: ${errorText(body)}"))
+                        return
+                    }
+                    try {
+                        if (settings.stream) {
+                            val source = it.body?.source() ?: error("响应内容为空")
+                            while (!source.exhausted()) {
+                                val line = source.readUtf8Line() ?: break
+                                if (!line.startsWith("data:")) continue
+                                val data = line.removePrefix("data:").trim()
+                                if (data == "[DONE]") break
+                                if (data.isNotBlank()) trySend(parseDelta(JSONObject(data)))
+                            }
+                        } else {
+                            val body = it.body?.string().orEmpty()
+                            trySend(parseFull(JSONObject(body)))
+                        }
+                        close()
+                    } catch (t: Throwable) {
+                        if (call.isCanceled()) {
+                            close()
+                        } else {
+                            close(IOException("模型响应中断：${t.message ?: "未知原因"}", t))
+                        }
+                    }
+                }
+            }
+        })
+        awaitClose { call.cancel() }
+    }
+
+    suspend fun test(settings: ApiSettings): String = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(modelsUrl(settings.baseUrl))
+            .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
+            val json = JSONObject(response.body?.string().orEmpty())
+            val count = json.optJSONArray("data")?.length()
+            if (count != null) "连接成功，发现 $count 个模型" else "连接成功"
+        }
+    }
+
+    /** 解析 /v1/models 的 data[].id 列表 */
+    suspend fun listModels(settings: ApiSettings): List<ModelDetail> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(modelsUrl(settings.baseUrl))
+            .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
+            val data = JSONObject(response.body?.string().orEmpty()).optJSONArray("data")
+                ?: return@use emptyList<ModelDetail>()
+            (0 until data.length()).mapNotNull { index ->
+                val obj = data.optJSONObject(index) ?: return@mapNotNull null
+                val id = obj.optString("id").orEmpty()
+                if (id.isBlank()) null else ModelDetail(
+                    id = id,
+                    state = obj.optString("state").takeIf { it.isNotBlank() && it != "null" },
+                    maxContextLength = obj.optIntOrNull("max_context_length"),
+                    loadedContextLength = obj.optIntOrNull("loaded_context_length"),
+                    arch = obj.optString("arch").takeIf { it.isNotBlank() && it != "null" },
+                    quant = obj.optString("quant").takeIf { it.isNotBlank() && it != "null" },
+                )
+            }
+        }
+    }
+
+    /** 用 settings.model 真发一条 1-token 聊天请求，验证模型可用 */
+    suspend fun testModel(settings: ApiSettings): String = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("model", settings.model)
+            put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "ping")))
+            put("max_tokens", 1)
+            put("stream", false)
+            put("temperature", 0)
+        }.toString()
+        val request = Request.Builder()
+            .url(chatUrl(settings.baseUrl))
+            .header("Content-Type", "application/json")
+            .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
+            .post(body.toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
+            val parsed = JSONObject(response.body?.string().orEmpty())
+            val err = parsed.optJSONObject("error")?.optString("message", "")
+            if (err.isNullOrBlank()) "模型 ${settings.model} 可用" else "模型 ${settings.model} 响应异常：$err"
+        }
+    }
+
+    private fun parseDelta(json: JSONObject): ApiDelta {
+        val choice = json.optJSONArray("choices")?.optJSONObject(0)
+        val delta = choice?.optJSONObject("delta") ?: JSONObject()
+        val usage = json.optJSONObject("usage")
+        return ApiDelta(
+            content = delta.optString("content", "").takeUnless { it == "null" }.orEmpty(),
+            reasoning = reasoningText(delta),
+            promptTokens = usage?.optIntOrNull("prompt_tokens"),
+            completionTokens = usage?.optIntOrNull("completion_tokens"),
+        )
+    }
+
+    private fun parseFull(json: JSONObject): ApiDelta {
+        val message = json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message") ?: JSONObject()
+        val usage = json.optJSONObject("usage")
+        return ApiDelta(
+            content = message.optString("content", ""),
+            reasoning = reasoningText(message),
+            promptTokens = usage?.optIntOrNull("prompt_tokens"),
+            completionTokens = usage?.optIntOrNull("completion_tokens"),
+        )
+    }
+
+    private fun reasoningText(json: JSONObject): String = sequenceOf("reasoning_content", "reasoning")
+        .map { json.optString(it, "") }
+        .firstOrNull { it.isNotBlank() && it != "null" }
+        .orEmpty()
+
+    private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null
+
+    private fun chatUrl(base: String): String {
+        val clean = base.trim().trimEnd('/')
+        return if (clean.endsWith("chat/completions")) clean else "$clean/chat/completions"
+    }
+
+    private fun modelsUrl(base: String): String {
+        val clean = base.trim().trimEnd('/').removeSuffix("/chat/completions")
+        return "$clean/models"
+    }
+
+    private fun errorText(body: String): String = runCatching {
+        val error = JSONObject(body).opt("error")
+        when (error) {
+            is JSONObject -> error.optString("message", body)
+            is String -> error
+            else -> body
+        }
+    }.getOrDefault(body).take(500)
+
+    companion object {
+        private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+    }
+}

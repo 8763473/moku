@@ -1,0 +1,30 @@
+.gradle/
+.idea/
+local.properties
+build/
+app/build/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+*.swp
+.vscode/
+
+# Android keystore
+*.jks
+*.keystore
+release.keystore
+keystore.properties
+
+# Local config
+google-services.json
+
+# zcode (this CLI's metadata)
+.zcode/
