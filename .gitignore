@@ -22,6 +22,8 @@ Thumbs.db
 *.keystore
 release.keystore
 keystore.properties
+# 例外：项目内置的 release keystore（密码由 GitHub secret KEYSTORE_PASSWORD 保护）
+!app/release.keystore
 
 # Local config
 google-services.json

@@ -27,13 +27,17 @@ android {
     }
 
     signingConfigs {
-        // 当 GitHub Actions 注入 KEYSTORE_PATH 时使用正式签名，否则不创建
-        System.getenv("KEYSTORE_PATH")?.let { keystorePath ->
+        // 仓库内置 app/release.keystore；密码由 KEYSTORE_PASSWORD 环境变量/Kr secret 提供。
+        // 本地构建可在 gradle.properties 设置 KEYSTORE_PASSWORD，否则需命令行 -PKEYSTORE_PASSWORD=...
+        val keystoreFile = rootProject.file("app/release.keystore")
+        val keystorePassword = (System.getenv("KEYSTORE_PASSWORD") ?: "")
+            .ifBlank { rootProject.findProperty("KEYSTORE_PASSWORD") as String? ?: "" }
+        if (keystoreFile.exists() && keystorePassword.isNotBlank()) {
             create("release") {
-                storeFile = file(keystorePath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+                storeFile = keystoreFile
+                storePassword = keystorePassword
+                keyAlias = "mokukey"
+                keyPassword = keystorePassword
             }
         }
     }
