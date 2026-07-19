@@ -15,8 +15,8 @@ android {
         applicationId = "com.yue.moku"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.2.4"
+        versionCode = 6
+        versionName = "0.2.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -36,7 +36,7 @@ android {
             create("release") {
                 storeFile = keystoreFile
                 storePassword = keystorePassword
-                keyAlias = "mokukey"
+                keyAlias = "androiddebugkey"
                 keyPassword = keystorePassword
             }
         }
