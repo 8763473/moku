@@ -30,6 +30,25 @@ data class ApiDelta(
     val completionTokens: Int? = null,
 )
 
+internal data class ChatRequestPlan(
+    val messages: List<ApiMessage>,
+    val reasoningEffort: String? = null,
+    val enableThinking: Boolean? = null,
+)
+
+internal fun planChatRequest(
+    thinkingMode: Boolean,
+    messages: List<ApiMessage>,
+): ChatRequestPlan = if (thinkingMode) {
+    ChatRequestPlan(messages = messages)
+} else {
+    ChatRequestPlan(
+        messages = messages,
+        reasoningEffort = "none",
+        enableThinking = false,
+    )
+}
+
 class ChatApiClient {
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -37,23 +56,38 @@ class ChatApiClient {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    // 非流式 API 请求（test/listModels/testModel）不应无限等待，
+    // 使用独立的短超时客户端。
+    private val shortTimeoutClient by lazy {
+        client.newBuilder()
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
     fun chat(
         settings: ApiSettings,
         messages: List<ApiMessage>,
         tools: List<JSONObject>? = null,
         toolChoice: String? = null,
     ): Flow<ApiDelta> = callbackFlow {
+        val requestPlan = planChatRequest(settings.thinkingMode, messages)
         val payload = JSONObject().apply {
             put("model", settings.model)
             put("temperature", settings.temperature.toDouble())
             put("stream", settings.stream)
             put("messages", JSONArray().apply {
-                messages.forEach { message ->
+                requestPlan.messages.forEach { message ->
                     put(JSONObject().put("role", message.role).put("content", message.content))
                 }
             })
             if (!tools.isNullOrEmpty()) put("tools", JSONArray(tools))
             if (!tools.isNullOrEmpty() && toolChoice != null) put("tool_choice", toolChoice)
+            requestPlan.reasoningEffort?.let { put("reasoning_effort", it) }
+            requestPlan.enableThinking?.let { enabled ->
+                // DashScope 读取顶层字段；vLLM 等实现读取模板参数。
+                put("enable_thinking", enabled)
+                put("chat_template_kwargs", JSONObject().put("enable_thinking", enabled))
+            }
         }
         val request = Request.Builder()
             .url(chatUrl(settings.baseUrl))
@@ -108,9 +142,10 @@ class ChatApiClient {
             .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
-            val json = JSONObject(response.body?.string().orEmpty())
+        shortTimeoutClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(body)}")
+            val json = JSONObject(body)
             val count = json.optJSONArray("data")?.length()
             if (count != null) "连接成功，发现 $count 个模型" else "连接成功"
         }
@@ -123,9 +158,10 @@ class ChatApiClient {
             .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
-            val data = JSONObject(response.body?.string().orEmpty()).optJSONArray("data")
+        shortTimeoutClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(body)}")
+            val data = JSONObject(body).optJSONArray("data")
                 ?: return@use emptyList<ModelDetail>()
             (0 until data.length()).mapNotNull { index ->
                 val obj = data.optJSONObject(index) ?: return@mapNotNull null
@@ -157,9 +193,10 @@ class ChatApiClient {
             .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
             .post(body.toRequestBody("application/json".toMediaType()))
             .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(response.body?.string().orEmpty())}")
-            val parsed = JSONObject(response.body?.string().orEmpty())
+        shortTimeoutClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw IOException("API ${response.code}: ${errorText(body)}")
+            val parsed = JSONObject(body)
             val err = parsed.optJSONObject("error")?.optString("message", "")
             if (err.isNullOrBlank()) "模型 ${settings.model} 可用" else "模型 ${settings.model} 响应异常：$err"
         }

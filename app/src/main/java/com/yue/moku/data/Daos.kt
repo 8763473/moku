@@ -44,11 +44,17 @@ interface MessageDao {
     @Update
     suspend fun update(value: MessageEntity)
 
+    @Query("SELECT * FROM messages WHERE id = :id")
+    suspend fun get(id: Long): MessageEntity?
+
     @Delete
     suspend fun delete(value: MessageEntity)
 
     @Query("DELETE FROM messages WHERE conversationId = :conversationId AND id > :fromId")
     suspend fun deleteAfter(conversationId: Long, fromId: Long)
+
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId AND id >= :fromId AND id <= :toId")
+    suspend fun deleteRange(conversationId: Long, fromId: Long, toId: Long)
 }
 
 @Dao

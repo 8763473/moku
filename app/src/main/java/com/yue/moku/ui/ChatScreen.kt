@@ -3,6 +3,7 @@ package com.yue.moku.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -78,7 +79,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,8 +100,6 @@ import com.yue.moku.domain.ContextBuilder
 import com.yue.moku.domain.KnowledgeRetriever
 import com.yue.moku.domain.TokenEstimator
 import com.yue.moku.domain.formatTokens
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -143,44 +141,28 @@ fun ChatScreen(viewModel: AppViewModel) {
         )
     }
     val usedTokens = breakdown.estimatedPromptTokens
-    // 是否跟随到底部（最新内容）。用户主动往上滚之后关闭，回到底部后重新开启。
-    var stickToBottom by remember { mutableStateOf(true) }
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            val info = listState.layoutInfo
-            if (info.totalItemsCount == 0) -1
-            else info.visibleItemsInfo.lastOrNull()?.index ?: -1
-        }.distinctUntilChanged().collect { lastVisible ->
-            if (messages.isNotEmpty()) {
-                stickToBottom = lastVisible >= messages.lastIndex
-            }
+    // 自动跟随只在用户没有主动浏览历史时生效。最后一条消息可能比屏幕高，
+    // 所以不能用“最后一项可见”判断是否在底部。
+    var autoFollow by remember(activeId) { mutableStateOf(true) }
+    val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
+    val canScrollForward = listState.canScrollForward
+    LaunchedEffect(isUserDragging, canScrollForward) {
+        when {
+            isUserDragging -> autoFollow = false
+            !canScrollForward -> autoFollow = true
         }
     }
     LaunchedEffect(messages.size, activeId) {
         if (messages.isNotEmpty()) {
-            stickToBottom = true
-            listState.animateScrollToItem(messages.lastIndex)
+            autoFollow = true
+            listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE)
         }
     }
-    // 流式生成时，把最新内容贴到视口底部——这样即使消息变得比视口还高，
-    // 也总是显示正在输出的那一段。
-    LaunchedEffect(stream) {
-        snapshotFlow { stream.content.length to stream.reasoning.length }
-            .map { it.first + it.second }
-            .distinctUntilChanged()
-            .collect {
-                if (messages.isEmpty()) return@collect
-                if (!stickToBottom) return@collect
-                val info = listState.layoutInfo
-                val viewportEnd = info.viewportEndOffset
-                val lastItem = info.visibleItemsInfo.firstOrNull { it.index == messages.lastIndex }
-                if (lastItem != null) {
-                    val overflow = (lastItem.offset + lastItem.size) - viewportEnd
-                    if (overflow > 0) listState.animateScrollToItem(messages.lastIndex)
-                } else if (generating) {
-                    listState.animateScrollToItem(messages.lastIndex)
-                }
-            }
+    // 以最后一项的底端为锚点；Int.MAX_VALUE 会被 LazyColumn 限制到真实最大滚动距离。
+    LaunchedEffect(stream.content.length, stream.reasoning.length) {
+        if (messages.isNotEmpty() && autoFollow && !isUserDragging) {
+            listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE)
+        }
     }
     LaunchedEffect(compressionNotice) {
         compressionNotice?.let { notice ->
@@ -256,6 +238,18 @@ fun ChatScreen(viewModel: AppViewModel) {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "会话列表") }
                     },
                     actions = {
+                        // 思考模式开关：蓝色文字=开启思考，灰色文字=关闭思考只输出正文
+                        TextButton(
+                            onClick = viewModel::toggleThinkingMode,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                        ) {
+                            Text(
+                                "思考",
+                                color = if (settings.thinkingMode) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = if (settings.thinkingMode) FontWeight.SemiBold else FontWeight.Normal,
+                            )
+                        }
                         IconButton(onClick = viewModel::newConversation) { Icon(Icons.Default.Add, "新建写作") }
                     },
                 )
@@ -323,11 +317,11 @@ fun ChatScreen(viewModel: AppViewModel) {
                                 )
                             }
                         }
-                        if (!stickToBottom && messages.isNotEmpty()) {
+                        if (!autoFollow && canScrollForward && messages.isNotEmpty()) {
                             SmallFloatingActionButton(
                                 onClick = {
-                                    stickToBottom = true
-                                    scope.launch { listState.animateScrollToItem(messages.lastIndex) }
+                                    autoFollow = true
+                                    scope.launch { listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE) }
                                 },
                                 modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                             ) { Icon(Icons.Default.KeyboardArrowDown, "回到最新") }
@@ -566,8 +560,6 @@ private fun MessageCard(
                         Text("等待模型响应…", style = MaterialTheme.typography.bodyMedium)
                     }
                 } else {
-                    val context = LocalContext.current
-                    val markwon = rememberMarkwon(context)
                     val markdownAnnotated = remember(message.content) {
                         if (message.content.isNotBlank()) markwon.render(message.content) else AnnotatedString("")
                     }
@@ -689,4 +681,3 @@ private fun Composer(
         }
     }
 }
-

@@ -113,8 +113,10 @@ class AppViewModel(
     fun deleteConversation(value: ConversationEntity) = viewModelScope.launch {
         if (value.id == _activeConversationId.value && _isGenerating.value) stopGenerating()
         conversationDao.delete(value)
-        _activeConversationId.value = conversationDao.latest()?.id
-            ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+        if (value.id == _activeConversationId.value) {
+            _activeConversationId.value = conversationDao.latest()?.id
+                ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+        }
     }
 
     fun deleteMessage(value: MessageEntity) = viewModelScope.launch {
@@ -131,13 +133,20 @@ class AppViewModel(
         }
     }
 
-    private suspend fun executeSend(prompt: String) {
+    private suspend fun executeSend(prompt: String, existingUserMessage: MessageEntity? = null) {
         autoCompressIfNeeded()
         com.yue.moku.service.GenerationService.start(appContext)
         val conversationId = _activeConversationId.value
         val currentSettings = settings.value
         val conversation = conversationDao.get(conversationId) ?: return
-        messageDao.insert(MessageEntity(conversationId = conversationId, role = "user", content = prompt))
+        // existingUserMessage 非 null 表示"重新发送/重新生成"：复用原 user 消息，避免新增一条
+        if (existingUserMessage != null) {
+            if (prompt != existingUserMessage.content) {
+                messageDao.update(existingUserMessage.copy(content = prompt))
+            }
+        } else {
+            messageDao.insert(MessageEntity(conversationId = conversationId, role = "user", content = prompt))
+        }
         conversationDao.update(conversation.copy(
             title = if (conversation.title == "新的写作") prompt.replace('\n', ' ').take(24) else conversation.title,
             updatedAt = System.currentTimeMillis(),
@@ -163,7 +172,8 @@ class AppViewModel(
             contextWindow = currentSettings.contextWindow,
         )
         val startedAt = System.currentTimeMillis()
-        val assistantId = messageDao.insert(MessageEntity(conversationId = conversationId, role = "assistant", content = ""))
+        val assistantCreatedAt = System.currentTimeMillis()
+        val assistantId = messageDao.insert(MessageEntity(conversationId = conversationId, role = "assistant", content = "", createdAt = assistantCreatedAt))
         _stream.value = StreamState(messageId = assistantId)
         _isGenerating.value = true
         var rawContent = ""
@@ -210,6 +220,7 @@ class AppViewModel(
                 role = "assistant",
                 content = parsed.content,
                 reasoning = parsed.reasoning,
+                createdAt = assistantCreatedAt,
                 promptTokens = promptTokens ?: context.estimatedPromptTokens,
                 completionTokens = completionTokens,
                 generationMs = finalElapsed,
@@ -217,7 +228,6 @@ class AppViewModel(
             ))
         } catch (t: Throwable) {
             if (generationJob?.isCancelled != true) {
-                _stream.value = _stream.value.copy(stopReason = friendlyError(t))
                 val message = friendlyError(t)
                 val partialElapsed = System.currentTimeMillis() - startedAt
                 messageDao.update(MessageEntity(
@@ -225,16 +235,33 @@ class AppViewModel(
                     conversationId = conversationId,
                     role = "assistant",
                     content = message,
-                    reasoning = _stream.value.reasoning,
+                    reasoning = rawReasoning,
+                    createdAt = assistantCreatedAt,
                     isError = true,
                     stopReason = message,
                     generationMs = partialElapsed,
                 ))
+                _stream.value = _stream.value.copy(stopReason = message)
                 _notice.value = message
+            } else {
+                // 用户主动停止：保存当前部分内容，不标记为错误
+                val parsed = ThinkParser.parse(rawContent, rawReasoning)
+                val partialElapsed = System.currentTimeMillis() - startedAt
+                messageDao.update(MessageEntity(
+                    id = assistantId,
+                    conversationId = conversationId,
+                    role = "assistant",
+                    content = parsed.content.ifBlank { "（生成已停止）" },
+                    reasoning = parsed.reasoning,
+                    createdAt = assistantCreatedAt,
+                    generationMs = partialElapsed.takeIf { it > 0 },
+                    stopReason = "用户停止",
+                ))
             }
         } finally {
             _isGenerating.value = false
             _stream.value = StreamState()
+            generationJob = null
             com.yue.moku.service.GenerationService.stop(appContext)
         }
     }
@@ -243,45 +270,29 @@ class AppViewModel(
         if (_isGenerating.value) return@launch
         val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
         if (effectiveText.isEmpty()) return@launch
-        // 编辑模式：就地更新原 user message content
-        if (editedContent != null && effectiveText != userMessage.content) {
-            messageDao.update(userMessage.copy(content = effectiveText))
-        }
-        // 删除该 user 消息之后的所有消息
+        // 删除该 user 消息之后的所有消息（含原 AI 回复）
         messageDao.deleteAfter(userMessage.conversationId, userMessage.id)
-        // 复用 send 逻辑
-        executeSend(effectiveText)
+        // 复用原 user 消息不新增，原地重发
+        executeSend(effectiveText, existingUserMessage = userMessage)
     }
 
     fun regenerateFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
         if (_isGenerating.value) return@launch
         val history = messageDao.listForConversation(aiMessage.conversationId)
         val userMessage = history.lastOrNull { it.role == "user" && it.id < aiMessage.id } ?: return@launch
+        // 删除该 user 之后的所有消息（含目标 AI），但保留该 user
         messageDao.deleteAfter(aiMessage.conversationId, userMessage.id)
-        executeSend(userMessage.content)
+        // 复用原 user 消息重发，不新增
+        executeSend(userMessage.content, existingUserMessage = userMessage)
     }
 
     fun stopGenerating() {
-        val partial = _stream.value
         _stream.value = _stream.value.copy(stopReason = "用户停止")
         generationJob?.cancel()
-        generationJob = null
+        // generationJob 的置 null 与流状态重置由 executeSend 的 finally 块统一处理；
+        // 数据库写入由 executeSend 的 catch 块在被取消时统一处理，避免重复写入竞态。
         _isGenerating.value = false
         com.yue.moku.service.GenerationService.stop(appContext)
-        _stream.value = StreamState()
-        if (partial.messageId != 0L) {
-            viewModelScope.launch {
-                messageDao.update(MessageEntity(
-                    id = partial.messageId,
-                    conversationId = _activeConversationId.value,
-                    role = "assistant",
-                    content = partial.content.ifBlank { "（生成已停止）" },
-                    reasoning = partial.reasoning,
-                    generationMs = partial.elapsedMs.takeIf { it > 0 },
-                    stopReason = "用户停止",
-                ))
-            }
-        }
     }
 
     fun saveKnowledge(value: KnowledgeEntity) = viewModelScope.launch { knowledgeDao.upsert(value.copy(updatedAt = System.currentTimeMillis())) }
@@ -289,6 +300,12 @@ class AppViewModel(
     fun saveSettings(value: ApiSettings) {
         container.settings.save(value)
         _notice.value = "设置已保存"
+    }
+
+    /** 主页快捷切换思考模式：开→允许并显示推理，关→请求模型直接输出正文。 */
+    fun toggleThinkingMode() = viewModelScope.launch {
+        val current = settings.value
+        saveSettings(current.copy(thinkingMode = !current.thinkingMode))
     }
 
     fun testConnection(value: ApiSettings) = viewModelScope.launch {
@@ -344,7 +361,8 @@ class AppViewModel(
                 return@launch
             }
             val firstOldId = toCompress.first().id
-            messageDao.deleteAfter(conversationId, firstOldId - 1)
+            val lastOldId = toCompress.last().id
+            messageDao.deleteRange(conversationId, firstOldId, lastOldId)
             val summaryId = messageDao.insert(MessageEntity(
                 conversationId = conversationId,
                 role = "system",
@@ -370,7 +388,11 @@ class AppViewModel(
             currentSettings.contextWindow,
         ).estimatedPromptTokens
         if (usedTokens.toFloat() / currentSettings.contextWindow > currentSettings.compressThreshold) {
-            compressContext()
+            if (!_isGenerating.value) {
+                compressContext()
+            }
+            // 生成中跳过压缩，等下次发送时再检查；避免 compressContext() 内部
+            // 的 stopGenerating() 杀死当前正在执行的 send() 协程。
         }
     }
 
@@ -381,8 +403,12 @@ class AppViewModel(
         return when {
             raw.contains("Failed to connect", true) -> "连接不到 API，请检查地址、端口和服务是否允许局域网访问。"
             raw.contains("timeout", true) -> "API 连接超时，请检查网络或模型是否仍在加载。"
-            raw.contains("中断", true) || raw.contains("解析", true) || raw.contains("canceled", true) ->
-                "模型响应中断，可能是网络问题或 App 被切到后台。请重试。"
+            raw.startsWith("模型响应中断：") -> {
+                val inner = raw.removePrefix("模型响应中断：").trim()
+                if (inner.isNotBlank() && inner != "未知原因") inner
+                else "模型响应中断，可能是网络问题或 App 被切到后台。请重试。"
+            }
+            raw.contains("canceled", true) -> "生成已取消"
             raw.isNotBlank() -> raw
             else -> "请求失败，请检查 API 配置。"
         }

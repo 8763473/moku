@@ -237,7 +237,7 @@ fun SettingsScreen(viewModel: AppViewModel) {
                 )
                 SettingSwitch(
                     title = "思考模式",
-                    description = "显示模型的推理过程，关闭后只看正文",
+                    description = "开启时允许并显示推理；关闭时请求模型直接输出正文",
                     checked = draft.thinkingMode,
                     onChecked = { draft = draft.copy(thinkingMode = it) },
                 )
