@@ -308,6 +308,36 @@ class AppViewModel(
         saveSettings(current.copy(thinkingMode = !current.thinkingMode))
     }
 
+    /** 主页快捷切换模型，同时刷新模型列表以供后续切换。 */
+    fun switchModel(targetModel: String) = viewModelScope.launch {
+        val current = settings.value
+        val trimmed = targetModel.trim()
+        if (trimmed.isBlank() || trimmed == current.model) return@launch
+        container.settings.save(current.copy(model = trimmed))
+        _notice.value = "已切换到 $trimmed"
+    }
+
+    /** 将当前模型加入已保存列表（去重） */
+    fun saveCurrentModel() = viewModelScope.launch {
+        val current = settings.value
+        val model = current.model.trim()
+        if (model.isBlank()) return@launch
+        val list = current.savedModels.toMutableList()
+        if (list.contains(model)) {
+            _notice.value = "$model 已在列表中"
+            return@launch
+        }
+        list.add(model)
+        saveSettings(current.copy(savedModels = list))
+        _notice.value = "已加入 $model"
+    }
+
+    /** 从已保存列表中移除一个模型 */
+    fun removeSavedModel(modelId: String) = viewModelScope.launch {
+        val current = settings.value
+        saveSettings(current.copy(savedModels = current.savedModels - modelId))
+    }
+
     fun testConnection(value: ApiSettings) = viewModelScope.launch {
         _notice.value = "正在测试连接…"
         _notice.value = runCatching { container.api.test(value) }.getOrElse { friendlyError(it) }

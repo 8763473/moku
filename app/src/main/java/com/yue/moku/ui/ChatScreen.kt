@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
@@ -49,6 +51,8 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -112,6 +116,7 @@ fun ChatScreen(viewModel: AppViewModel) {
     val generating by viewModel.isGenerating.collectAsStateWithLifecycle()
     val stream by viewModel.stream.collectAsStateWithLifecycle()
     val recalled by viewModel.retrieved.collectAsStateWithLifecycle()
+    val modelDetails by viewModel.modelDetails.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
@@ -120,6 +125,7 @@ fun ChatScreen(viewModel: AppViewModel) {
     val compressionNotice by viewModel.compressionNotice.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     var previewingSummary by remember { mutableStateOf<String?>(null) }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -228,17 +234,142 @@ fun ChatScreen(viewModel: AppViewModel) {
             snackbarHost = { SnackbarHost(snackbar) },
             topBar = {
                 TopAppBar(
-                    title = {
-                        Column {
-                            Text("墨库", fontWeight = FontWeight.SemiBold)
-                            Text(settings.model.ifBlank { "尚未配置模型" }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    },
+                    title = { Text("墨库", fontWeight = FontWeight.SemiBold) },
                     navigationIcon = {
                         IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, "会话列表") }
                     },
                     actions = {
-                        // 思考模式开关：蓝色文字=开启思考，灰色文字=关闭思考只输出正文
+                        // 模型切换
+                        Box {
+                            TextButton(
+                                onClick = { modelMenuExpanded = true },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Text(
+                                    settings.model.ifBlank { "未配置模型" },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    null,
+                                    Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false },
+                            ) {
+                                // 已保存的模型
+                                if (settings.savedModels.isNotEmpty()) {
+                                    Text(
+                                        "已保存的模型",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                    )
+                                    settings.savedModels.forEach { saved ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    saved,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    fontWeight = if (saved == settings.model) FontWeight.SemiBold else FontWeight.Normal,
+                                                )
+                                            },
+                                            onClick = {
+                                                viewModel.switchModel(saved)
+                                                modelMenuExpanded = false
+                                            },
+                                            trailingIcon = {
+                                                if (saved == settings.model) {
+                                                    Icon(Icons.Outlined.CheckCircle, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                                }
+                                            },
+                                        )
+                                    }
+                                    HorizontalDivider()
+                                }
+                                // 从 API 获取的模型列表
+                                if (modelDetails.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "点击刷新以获取模型列表",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                style = MaterialTheme.typography.bodySmall,
+                                            )
+                                        },
+                                        onClick = {
+                                            viewModel.fetchModels(settings)
+                                            modelMenuExpanded = false
+                                        },
+                                        leadingIcon = { Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp)) },
+                                    )
+                                } else {
+                                    Text(
+                                        "服务器模型",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                    )
+                                    modelDetails.forEach { detail ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        detail.id,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        fontWeight = if (detail.id == settings.model) FontWeight.SemiBold else FontWeight.Normal,
+                                                    )
+                                                    if (detail.state == "loaded") {
+                                                        Spacer(Modifier.width(6.dp))
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                                        ) {
+                                                            Text(
+                                                                "已加载",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                            onClick = {
+                                                viewModel.switchModel(detail.id)
+                                                modelMenuExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                                HorizontalDivider()
+                                // 操作区
+                                DropdownMenuItem(
+                                    text = { Text("保存当前模型到列表", style = MaterialTheme.typography.bodySmall) },
+                                    onClick = {
+                                        viewModel.saveCurrentModel()
+                                        modelMenuExpanded = false
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.BookmarkAdd, null, Modifier.size(18.dp)) },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("刷新模型列表", style = MaterialTheme.typography.bodySmall) },
+                                    onClick = {
+                                        viewModel.fetchModels(settings)
+                                        modelMenuExpanded = false
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.Refresh, null, Modifier.size(18.dp)) },
+                                )
+                            }
+                        }
+                        // 思考模式开关
                         TextButton(
                             onClick = viewModel::toggleThinkingMode,
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Compress
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
@@ -183,6 +185,54 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     Icon(Icons.Outlined.Science, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
                     Text("测试当前模型")
+                }
+                // 已保存的模型管理
+                val saved = draft.savedModels
+                if (saved.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp)) {
+                            Text("已保存的模型", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(6.dp))
+                            saved.forEach { modelId ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        modelId,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    IconButton(
+                                        onClick = { viewModel.removeSavedModel(modelId); draft = draft.copy(savedModels = draft.savedModels - modelId) },
+                                        modifier = Modifier.size(32.dp),
+                                    ) {
+                                        Icon(Icons.Outlined.Close, "移除", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.saveCurrentModel()
+                        // 同步本地 draft 的 savedModels，避免要重新进设置才能看到
+                        val current = draft.model.trim()
+                        if (current.isNotBlank() && current !in draft.savedModels) {
+                            draft = draft.copy(savedModels = draft.savedModels + current)
+                        }
+                    },
+                    enabled = draft.model.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Outlined.BookmarkAdd, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("将当前模型加入已保存列表")
                 }
             }
 

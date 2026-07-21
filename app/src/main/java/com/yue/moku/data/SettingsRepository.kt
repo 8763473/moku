@@ -10,6 +10,7 @@ data class ApiSettings(
     val baseUrl: String = "http://10.0.2.2:1234/v1",
     val apiKey: String = "",
     val model: String = "local-model",
+    val savedModels: List<String> = emptyList(),
     val contextWindow: Int = 32_768,
     val temperature: Float = 0.7f,
     val systemPrompt: String = "你是一位严谨、富有文学感的中文写作助手。尊重用户给出的设定、语气和格式要求。",
@@ -32,6 +33,7 @@ class SettingsRepository(context: Context) {
             putString("base_url", value.baseUrl.trim().trimEnd('/'))
             putString("api_key", value.apiKey.trim())
             putString("model", value.model.trim())
+            putString("saved_models", org.json.JSONArray(value.savedModels).toString())
             putInt("context_window", value.contextWindow.coerceIn(1024, 2_000_000))
             putFloat("temperature", value.temperature.coerceIn(0f, 2f))
             putString("system_prompt", value.systemPrompt)
@@ -50,6 +52,7 @@ class SettingsRepository(context: Context) {
         baseUrl = prefs.getString("base_url", null) ?: ApiSettings().baseUrl,
         apiKey = prefs.getString("api_key", null) ?: "",
         model = prefs.getString("model", null) ?: ApiSettings().model,
+        savedModels = loadSavedModels(),
         contextWindow = prefs.getInt("context_window", ApiSettings().contextWindow),
         temperature = prefs.getFloat("temperature", ApiSettings().temperature),
         systemPrompt = prefs.getString("system_prompt", null) ?: ApiSettings().systemPrompt,
@@ -61,4 +64,16 @@ class SettingsRepository(context: Context) {
         compressThreshold = prefs.getFloat("compress_threshold", 0.8f),
         allowAiWriteKnowledge = prefs.getBoolean("allow_ai_write_knowledge", false),
     )
+
+    private fun loadSavedModels(): List<String> {
+        val raw = prefs.getString("saved_models", null) ?: return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).mapNotNull { i ->
+                arr.optString(i).takeIf { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 }
