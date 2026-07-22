@@ -16,6 +16,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.noties.markwon.Markwon
+import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.ext.tasklist.TaskListPlugin
@@ -23,6 +24,7 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
 @Composable
 fun rememberMarkwon(context: Context): Markwon = remember(context) {
     Markwon.builder(context)
+        .usePlugin(MarkwonInlineParserPlugin.create())
         .usePlugin(StrikethroughPlugin.create())
         .usePlugin(TablePlugin.create(context))
         .usePlugin(TaskListPlugin.create(context))
