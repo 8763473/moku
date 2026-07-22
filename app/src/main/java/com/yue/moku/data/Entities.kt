@@ -11,6 +11,10 @@ data class ConversationEntity(
     val title: String,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    /** 分支来源：如果此对话是从另一个对话的某条消息 regenerate 而来，则指向来源对话 ID */
+    val parentBranchId: Long? = null,
+    /** 分叉点消息 ID：来源对话中分叉发生位置的最后一条保留的消息（即那条 user 消息的 id） */
+    val forkMessageId: Long? = null,
 )
 
 @Entity(

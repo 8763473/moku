@@ -58,6 +58,9 @@ class AppViewModel(
     private val _activeConversationId = MutableStateFlow(0L)
     val activeConversationId: StateFlow<Long> = _activeConversationId.asStateFlow()
     val conversations = conversationDao.observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val activeConversation: StateFlow<ConversationEntity?> = conversations
+        .map { list -> list.find { it.id == _activeConversationId.value } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
     val messages = _activeConversationId.flatMapLatest { id ->
         if (id == 0L) flowOf(emptyList()) else messageDao.observeForConversation(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -112,7 +115,14 @@ class AppViewModel(
     }
 
     fun deleteConversation(value: ConversationEntity) = viewModelScope.launch {
-        if (value.id == _activeConversationId.value && _isGenerating.value) stopGenerating()
+        val branches: List<ConversationEntity> = conversationDao.listBranches(value.id)
+        if ((value.id == _activeConversationId.value ||
+            branches.any { it.id == _activeConversationId.value }) &&
+            _isGenerating.value) stopGenerating()
+        // 级联删除所有子分支
+        for (branch: ConversationEntity in branches) {
+            conversationDao.delete(branch)
+        }
         conversationDao.delete(value)
         if (value.id == _activeConversationId.value) {
             _activeConversationId.value = conversationDao.latest()?.id
@@ -271,17 +281,16 @@ class AppViewModel(
         }
     }
 
+    /** 从用户消息分叉：创建新对话，复制该消息及之前的历史，然后重新生成 */
     fun regenerateFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
         val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
-        if (effectiveText.isEmpty()) return@launch
-        // 删除该 user 消息之后的所有消息（含原 AI 回复）
-        messageDao.deleteAfter(userMessage.conversationId, userMessage.id)
-        // 复用原 user 消息不新增，原地重发
-        executeSend(effectiveText, existingUserMessage = userMessage)
+        if (effectiveText.isEmpty()) { _isGenerating.value = false; return@launch }
+        copyMessagesUpTo(userMessage, effectiveText)
     }
 
+    /** 从 AI 消息分叉：以上一条 user 消息为分叉点创建新对话 */
     fun regenerateFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
@@ -290,10 +299,50 @@ class AppViewModel(
             _isGenerating.value = false
             return@launch
         }
-        // 删除该 user 之后的所有消息（含目标 AI），但保留该 user
-        messageDao.deleteAfter(aiMessage.conversationId, userMessage.id)
-        // 复用原 user 消息重发，不新增
-        executeSend(userMessage.content, existingUserMessage = userMessage)
+        copyMessagesUpTo(userMessage, userMessage.content)
+    }
+
+    /**
+     * 分支操作：复制对话中 [forkPoint] 及其之前的所有消息到一个新对话，
+     * 新对话的 parentBranchId 指向原对话，然后在新对话中重新发送。
+     */
+    private suspend fun copyMessagesUpTo(forkPoint: MessageEntity, newPrompt: String) {
+        val oldConversationId = forkPoint.conversationId
+        val oldConversation = conversationDao.get(oldConversationId) ?: run {
+            _isGenerating.value = false
+            return
+        }
+        val history = messageDao.listForConversation(oldConversationId)
+        // 取 forkPoint 及之前的所有消息
+        val messagesToCopy = history.takeWhile { it.id <= forkPoint.id }
+            .filter { it.role != "system" } // system 摘要不复制
+        // 创建新对话作为分支
+        val branchTitle = if (oldConversation.title == "新的写作") effectiveBranchTitle(history, forkPoint)
+        else "${oldConversation.title} (分支)"
+        val newConvId = conversationDao.insert(
+            ConversationEntity(
+                title = branchTitle,
+                parentBranchId = oldConversationId,
+                forkMessageId = forkPoint.id,
+            )
+        )
+        // 复制分叉点之前的所有非 system 消息
+        for (msg in messagesToCopy) {
+            messageDao.insert(msg.copy(id = 0, conversationId = newConvId))
+        }
+        // 切换到此新对话并发送
+        _activeConversationId.value = newConvId
+        executeSend(newPrompt)
+    }
+
+    /** 从历史记录中推导分支标题 */
+    private fun effectiveBranchTitle(history: List<MessageEntity>, forkPoint: MessageEntity): String {
+        val userMessages = history.filter { it.role == "user" && it.id <= forkPoint.id }
+        if (userMessages.isNotEmpty()) {
+            val last = userMessages.last().content.trim()
+            return last.take(24).replace('\n', ' ')
+        }
+        return "分支对话"
     }
 
     fun stopGenerating() {

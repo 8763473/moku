@@ -525,11 +525,11 @@ fun ChatScreen(viewModel: AppViewModel) {
     }
 
     pendingRegenerate?.let { target ->
-        val title = if (target is RegenerateTarget.User) "重新发送" else "重新生成"
+        val title = if (target is RegenerateTarget.User) "重新发送（创建新分支）" else "重新生成（创建新分支）"
         val body = if (target is RegenerateTarget.User) {
-            "将删除当前消息之后的所有 AI 回复，并以原文本重新生成。继续？"
+            "将创建新的分支对话，保留原对话不删除。新对话会包含当前消息及之前的历史。继续？"
         } else {
-            "将删除当前 AI 回复及之后的所有消息，并基于上一条用户消息重新生成。继续？"
+            "将创建新的分支对话，保留原对话不删除。新对话会包含上一条用户消息及之前的历史，并重新生成。继续？"
         }
         AlertDialog(
             onDismissRequest = { pendingRegenerate = null },

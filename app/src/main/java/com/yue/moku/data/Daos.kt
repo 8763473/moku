@@ -17,6 +17,21 @@ interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE id = :id")
     suspend fun get(id: Long): ConversationEntity?
 
+    @Query("SELECT * FROM conversations WHERE parentBranchId IS NULL ORDER BY updatedAt DESC")
+    fun observeRoots(): Flow<List<ConversationEntity>>
+
+    @Query("SELECT * FROM conversations WHERE parentBranchId = :parentId ORDER BY updatedAt DESC")
+    fun observeBranches(parentId: Long): Flow<List<ConversationEntity>>
+
+    @Query("SELECT * FROM conversations WHERE parentBranchId = :parentId ORDER BY updatedAt DESC")
+    suspend fun listBranches(parentId: Long): List<ConversationEntity>
+
+    @Query("SELECT * FROM conversations WHERE id = :id")
+    suspend fun getById(id: Long): ConversationEntity?
+
+    @Insert
+    suspend fun insertAll(values: List<ConversationEntity>): List<Long>
+
     @Query("SELECT * FROM conversations ORDER BY updatedAt DESC LIMIT 1")
     suspend fun latest(): ConversationEntity?
 
