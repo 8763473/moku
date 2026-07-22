@@ -57,11 +57,10 @@ fun Markwon.render(
         val textLen = spanned.length
         if (textLen == 0) return@buildAnnotatedString
 
-        val spansList = (0 until textLen).flatMap { i ->
-            spanned.getSpans(i, i + 1, Any::class.java)
-                .filter { spanned.getSpanEnd(it) > spanned.getSpanStart(it) }
-                .distinctBy { System.identityHashCode(it) }
-        }.sortedBy { spanned.getSpanStart(it) }
+        // getSpans(0, len) returns ALL spans in the full range — O(1), not O(n²)
+        val spansList = spanned.getSpans(0, textLen, Any::class.java)
+            .filter { spanned.getSpanEnd(it) > spanned.getSpanStart(it) }
+            .sortedBy { spanned.getSpanStart(it) }
 
         for (span in spansList) {
             val start = spanned.getSpanStart(span).coerceIn(0, textLen)

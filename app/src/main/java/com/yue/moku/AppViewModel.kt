@@ -139,8 +139,13 @@ class AppViewModel(
     private suspend fun executeSend(prompt: String, existingUserMessage: MessageEntity? = null) {
         val conversationId = _activeConversationId.value
         val currentSettings = settings.value
-        val conversation = conversationDao.get(conversationId) ?: return
-        maybeAutoCompress()
+        val conversation = conversationDao.get(conversationId) ?: run {
+            _isGenerating.value = false
+            return
+        }
+        // 自动压缩放在 try 之前：如果压缩过程中 cancel 了当前协程，
+        // 外部 send() 的 _isGenerating 标记需要回退。
+        runCatching { maybeAutoCompress() }
         com.yue.moku.service.GenerationService.start(appContext)
         // existingUserMessage 非 null 表示"重新发送/重新生成"：复用原 user 消息，避免新增一条
         if (existingUserMessage != null) {
@@ -374,7 +379,11 @@ class AppViewModel(
             currentSettings.contextWindow,
         ).estimatedPromptTokens
         if (usedTokens.toFloat() / currentSettings.contextWindow <= currentSettings.compressThreshold) return
-        performCompression()
+        try {
+            performCompression()
+        } catch (t: CancellationException) {
+            // 压缩中断：已被取消的协程不需要回退
+        }
     }
 
     fun compressContext() = viewModelScope.launch {
