@@ -30,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -114,6 +115,7 @@ fun ChatScreen(viewModel: AppViewModel) {
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val activeId by viewModel.activeConversationId.collectAsStateWithLifecycle()
+    val activeConversation by viewModel.activeConversation.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val generating by viewModel.isGenerating.collectAsStateWithLifecycle()
     val stream by viewModel.stream.collectAsStateWithLifecycle()
@@ -211,21 +213,49 @@ fun ChatScreen(viewModel: AppViewModel) {
                 }
                 HorizontalDivider()
                 LazyColumn(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                    items(conversations, key = { it.id }) { conversation ->
-                        NavigationDrawerItem(
-                            selected = conversation.id == activeId,
-                            onClick = {
-                                viewModel.selectConversation(conversation.id)
-                                scope.launch { drawerState.close() }
-                            },
-                            label = { Text(conversation.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-                            badge = {
-                                IconButton(onClick = { viewModel.deleteConversation(conversation) }, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Default.DeleteOutline, "删除会话", modifier = Modifier.size(18.dp))
-                                }
-                            },
-                            modifier = Modifier.padding(vertical = 3.dp),
-                        )
+                    // 按树形结构展示：根对话 + 其分支
+                    val rootList = conversations.filter { it.parentBranchId == null }
+                    val branchMap = conversations.filter { it.parentBranchId != null }.groupBy { it.parentBranchId!! }
+                    rootList.forEach { root ->
+                        item(key = root.id) {
+                            NavigationDrawerItem(
+                                selected = root.id == activeId,
+                                onClick = {
+                                    viewModel.selectConversation(root.id)
+                                    scope.launch { drawerState.close() }
+                                },
+                                label = { Text(root.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                                badge = {
+                                    IconButton(onClick = { viewModel.deleteConversation(root) }, modifier = Modifier.size(36.dp)) {
+                                        Icon(Icons.Default.DeleteOutline, "删除会话", modifier = Modifier.size(18.dp))
+                                    }
+                                },
+                                modifier = Modifier.padding(vertical = 3.dp),
+                            )
+                        }
+                        // 子分支（缩进显示）
+                        branchMap[root.id]?.forEach { branch ->
+                            item(key = branch.id) {
+                                NavigationDrawerItem(
+                                    selected = branch.id == activeId,
+                                    onClick = {
+                                        viewModel.selectConversation(branch.id)
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    label = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.AutoMirrored.Filled.AltRoute, "分支", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(branch.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
+                                    },
+                                    badge = {
+                                        Text("分支", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    },
+                                    modifier = Modifier.padding(start = 28.dp, top = 1.dp, bottom = 1.dp),
+                                )
+                            }
+                        }
                     }
                 }
             }
