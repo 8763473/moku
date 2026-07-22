@@ -86,7 +86,8 @@ object KnowledgeRetriever {
     internal fun tokens(value: String): Set<String> {
         val lower = value.lowercase()
         val result = Regex("[a-z0-9_]{2,}").findAll(lower).map { it.value }.toMutableSet()
-        Regex("[\\u3400-\\u9fff]+").findAll(lower).forEach { match ->
+        // CJK Unified (基本区 + 扩展A + 兼容区) + 日文假名 + CJK 扩展 B~G
+        Regex("[\\u3040-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff\\x{20000}-\\x{2a6df}\\x{2a700}-\\x{2b73f}\\x{2b740}-\\x{2b81f}\\x{2b820}-\\x{2ceaf}\\x{2ceb0}-\\x{2ebef}\\x{30000}-\\x{3134f}]+").findAll(lower).forEach { match ->
             val text = match.value
             if (text.length == 1) result += text
             else for (index in 0 until text.length - 1) result += text.substring(index, index + 2)
@@ -118,7 +119,7 @@ object ContextBuilder {
         val selected = mutableListOf<MessageEntity>()
         for (message in history.asReversed()) {
             val cost = TokenEstimator.estimate(message.content) + 6
-            if (selected.isNotEmpty() && used + cost > budget) break
+            if (used + cost > budget) break
             selected += message
             used += cost
         }

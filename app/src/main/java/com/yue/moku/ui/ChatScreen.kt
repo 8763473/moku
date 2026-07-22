@@ -637,8 +637,9 @@ private fun MessageCard(
     }
     val context = LocalContext.current
     val markwon = rememberMarkwon(context)
-    val reasoningAnnotated = remember(message.reasoning) {
-        if (message.reasoning.isNotBlank()) markwon.render(message.reasoning) else AnnotatedString("")
+    val linkColor = MaterialTheme.colorScheme.primary
+    val reasonAnnotated = remember(message.reasoning) {
+        if (message.reasoning.isNotBlank()) markwon.render(message.reasoning, linkColor) else AnnotatedString("")
     }
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -665,7 +666,7 @@ private fun MessageCard(
                     AnimatedVisibility(reasoningOpen) {
                         SelectionContainer {
                             Text(
-                                reasoningAnnotated,
+                                reasonAnnotated,
                                 modifier = Modifier.padding(top = 9.dp),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -696,7 +697,7 @@ private fun MessageCard(
                     }
                 } else {
                     val markdownAnnotated = remember(message.content) {
-                        if (message.content.isNotBlank()) markwon.render(message.content) else AnnotatedString("")
+                        if (message.content.isNotBlank()) markwon.render(message.content, linkColor) else AnnotatedString("")
                     }
                     SelectionContainer {
                         Text(markdownAnnotated, style = MaterialTheme.typography.bodyLarge)

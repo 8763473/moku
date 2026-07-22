@@ -83,10 +83,13 @@ class ChatApiClient {
             if (!tools.isNullOrEmpty()) put("tools", JSONArray(tools))
             if (!tools.isNullOrEmpty() && toolChoice != null) put("tool_choice", toolChoice)
             requestPlan.reasoningEffort?.let { put("reasoning_effort", it) }
+            // enable_thinking / chat_template_kwargs 仅对非 OpenAI 官方端点发送
+            // （如 LM Studio / DashScope / vLLM），避免严格兼容的 API 拒绝未知参数。
             requestPlan.enableThinking?.let { enabled ->
-                // DashScope 读取顶层字段；vLLM 等实现读取模板参数。
-                put("enable_thinking", enabled)
-                put("chat_template_kwargs", JSONObject().put("enable_thinking", enabled))
+                if (!isOpenAiEndpoint(settings.baseUrl)) {
+                    put("enable_thinking", enabled)
+                    put("chat_template_kwargs", JSONObject().put("enable_thinking", enabled))
+                }
             }
         }
         val request = Request.Builder()
@@ -244,6 +247,15 @@ class ChatApiClient {
         .orEmpty()
 
     private fun JSONObject.optIntOrNull(key: String): Int? = if (has(key) && !isNull(key)) optInt(key) else null
+
+    /** 读取 /v1/models 时会设置此值；仅对 LM Studio / DashScope / vLLM 等非 OpenAI 端点发送 enable_thinking */
+    private fun isOpenAiEndpoint(baseUrl: String): Boolean {
+        val netloc = Regex("https?://(?:[^@\n]+@)?([^:\n/?]{2,})").find(baseUrl.trim())?.groupValues?.get(1)
+            ?: return false
+        return netloc.endsWith("api.openai.com") ||
+            netloc.endsWith("openai.azure.com") ||
+            netloc == "localhost" || netloc == "127.0.0.1"
+    }
 
     private fun chatUrl(base: String): String {
         val clean = base.trim().trimEnd('/')

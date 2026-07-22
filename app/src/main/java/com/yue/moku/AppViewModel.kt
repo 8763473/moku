@@ -134,11 +134,11 @@ class AppViewModel(
     }
 
     private suspend fun executeSend(prompt: String, existingUserMessage: MessageEntity? = null) {
-        autoCompressIfNeeded()
-        com.yue.moku.service.GenerationService.start(appContext)
         val conversationId = _activeConversationId.value
         val currentSettings = settings.value
         val conversation = conversationDao.get(conversationId) ?: return
+        maybeAutoCompress()
+        com.yue.moku.service.GenerationService.start(appContext)
         // existingUserMessage 非 null 表示"重新发送/重新生成"：复用原 user 消息，避免新增一条
         if (existingUserMessage != null) {
             if (prompt != existingUserMessage.content) {
@@ -359,23 +359,46 @@ class AppViewModel(
         _notice.value = runCatching { container.api.testModel(value) }.getOrElse { friendlyError(it) }
     }
 
-    fun compressContext() = viewModelScope.launch {
-        if (_isCompressing.value) return@launch
+    private suspend fun maybeAutoCompress() {
+        val currentSettings = settings.value
+        if (!currentSettings.autoCompress) return
         val conversationId = _activeConversationId.value
-        if (conversationId == 0L) return@launch
+        if (conversationId == 0L) return
+        val usedTokens = ContextBuilder.build(
+            currentSettings.systemPrompt,
+            "",
+            messageDao.listForConversation(conversationId),
+            currentSettings.contextWindow,
+        ).estimatedPromptTokens
+        if (usedTokens.toFloat() / currentSettings.contextWindow <= currentSettings.compressThreshold) return
+        performCompression()
+    }
+
+    fun compressContext() = viewModelScope.launch {
+        performCompression()
+    }
+
+    /**
+     * 实际执行压缩的核心逻辑。由 maybeAutoCompress（发送前自动检查）或
+     * compressContext（用户手动触发）调用。
+     */
+    private suspend fun performCompression() {
+        if (_isCompressing.value) return
+        val conversationId = _activeConversationId.value
+        if (conversationId == 0L) return
         if (_isGenerating.value) stopGenerating()
         _isCompressing.value = true
         try {
             val history = messageDao.listForConversation(conversationId)
             if (history.size < 8) {
                 _notice.value = "消息太少，无需压缩"
-                return@launch
+                return
             }
             val keepRecent = 6
             val toCompress = history.dropLast(keepRecent)
             if (toCompress.isEmpty()) {
                 _notice.value = "消息太少，无需压缩"
-                return@launch
+                return
             }
             val concat = toCompress.joinToString("\n\n") { "[${it.role}] ${it.content}" }
             val summaryPrompt = "请用中文将以下对话内容压缩为简洁摘要，保留关键信息、人物、情节走向、设定，300 字以内。\n\n$concat"
@@ -388,7 +411,7 @@ class AppViewModel(
             val summary = summaryBuilder.toString()
             if (summary.isBlank()) {
                 _notice.value = "压缩失败：模型未返回内容"
-                return@launch
+                return
             }
             val firstOldId = toCompress.first().id
             val lastOldId = toCompress.last().id
@@ -403,26 +426,6 @@ class AppViewModel(
             _notice.value = friendlyError(t)
         } finally {
             _isCompressing.value = false
-        }
-    }
-
-    fun autoCompressIfNeeded() = viewModelScope.launch {
-        val currentSettings = settings.value
-        if (!currentSettings.autoCompress) return@launch
-        val conversationId = _activeConversationId.value
-        if (conversationId == 0L) return@launch
-        val usedTokens = ContextBuilder.build(
-            currentSettings.systemPrompt,
-            "",
-            messageDao.listForConversation(conversationId),
-            currentSettings.contextWindow,
-        ).estimatedPromptTokens
-        if (usedTokens.toFloat() / currentSettings.contextWindow > currentSettings.compressThreshold) {
-            if (!_isGenerating.value) {
-                compressContext()
-            }
-            // 生成中跳过压缩，等下次发送时再检查；避免 compressContext() 内部
-            // 的 stopGenerating() 杀死当前正在执行的 send() 协程。
         }
     }
 
