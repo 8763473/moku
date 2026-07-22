@@ -17,6 +17,7 @@ import com.yue.moku.domain.ApiMessage
 import com.yue.moku.network.ModelDetail
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -128,6 +129,8 @@ class AppViewModel(
         val prompt = text.trim()
         val conversationId = _activeConversationId.value
         if (prompt.isEmpty() || conversationId == 0L || _isGenerating.value || _isCompressing.value) return
+        // 先标记生成中再启动协程，消除 TOCTOU 竞态窗口
+        _isGenerating.value = true
         generationJob = viewModelScope.launch {
             executeSend(prompt)
         }
@@ -175,7 +178,6 @@ class AppViewModel(
         val assistantCreatedAt = System.currentTimeMillis()
         val assistantId = messageDao.insert(MessageEntity(conversationId = conversationId, role = "assistant", content = "", createdAt = assistantCreatedAt))
         _stream.value = StreamState(messageId = assistantId)
-        _isGenerating.value = true
         var rawContent = ""
         var rawReasoning = ""
         var promptTokens: Int? = null
@@ -226,38 +228,36 @@ class AppViewModel(
                 generationMs = finalElapsed,
                 stopReason = "生成完成",
             ))
+        } catch (t: CancellationException) {
+            // 用户主动停止：保存当前部分内容，不标记为错误
+            val parsed = ThinkParser.parse(rawContent, rawReasoning)
+            val partialElapsed = System.currentTimeMillis() - startedAt
+            messageDao.update(MessageEntity(
+                id = assistantId,
+                conversationId = conversationId,
+                role = "assistant",
+                content = parsed.content.ifBlank { "（生成已停止）" },
+                reasoning = parsed.reasoning,
+                createdAt = assistantCreatedAt,
+                generationMs = partialElapsed.takeIf { it > 0 },
+                stopReason = "用户停止",
+            ))
         } catch (t: Throwable) {
-            if (generationJob?.isCancelled != true) {
-                val message = friendlyError(t)
-                val partialElapsed = System.currentTimeMillis() - startedAt
-                messageDao.update(MessageEntity(
-                    id = assistantId,
-                    conversationId = conversationId,
-                    role = "assistant",
-                    content = message,
-                    reasoning = rawReasoning,
-                    createdAt = assistantCreatedAt,
-                    isError = true,
-                    stopReason = message,
-                    generationMs = partialElapsed,
-                ))
-                _stream.value = _stream.value.copy(stopReason = message)
-                _notice.value = message
-            } else {
-                // 用户主动停止：保存当前部分内容，不标记为错误
-                val parsed = ThinkParser.parse(rawContent, rawReasoning)
-                val partialElapsed = System.currentTimeMillis() - startedAt
-                messageDao.update(MessageEntity(
-                    id = assistantId,
-                    conversationId = conversationId,
-                    role = "assistant",
-                    content = parsed.content.ifBlank { "（生成已停止）" },
-                    reasoning = parsed.reasoning,
-                    createdAt = assistantCreatedAt,
-                    generationMs = partialElapsed.takeIf { it > 0 },
-                    stopReason = "用户停止",
-                ))
-            }
+            val message = friendlyError(t)
+            val partialElapsed = System.currentTimeMillis() - startedAt
+            messageDao.update(MessageEntity(
+                id = assistantId,
+                conversationId = conversationId,
+                role = "assistant",
+                content = message,
+                reasoning = rawReasoning,
+                createdAt = assistantCreatedAt,
+                isError = true,
+                stopReason = message,
+                generationMs = partialElapsed,
+            ))
+            _stream.value = _stream.value.copy(stopReason = message)
+            _notice.value = message
         } finally {
             _isGenerating.value = false
             _stream.value = StreamState()
@@ -267,7 +267,8 @@ class AppViewModel(
     }
 
     fun regenerateFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
-        if (_isGenerating.value) return@launch
+        if (_isGenerating.value || _isCompressing.value) return@launch
+        _isGenerating.value = true
         val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
         if (effectiveText.isEmpty()) return@launch
         // 删除该 user 消息之后的所有消息（含原 AI 回复）
@@ -277,9 +278,13 @@ class AppViewModel(
     }
 
     fun regenerateFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
-        if (_isGenerating.value) return@launch
+        if (_isGenerating.value || _isCompressing.value) return@launch
+        _isGenerating.value = true
         val history = messageDao.listForConversation(aiMessage.conversationId)
-        val userMessage = history.lastOrNull { it.role == "user" && it.id < aiMessage.id } ?: return@launch
+        val userMessage = history.lastOrNull { it.role == "user" && it.id < aiMessage.id } ?: run {
+            _isGenerating.value = false
+            return@launch
+        }
         // 删除该 user 之后的所有消息（含目标 AI），但保留该 user
         messageDao.deleteAfter(aiMessage.conversationId, userMessage.id)
         // 复用原 user 消息重发，不新增
@@ -289,10 +294,8 @@ class AppViewModel(
     fun stopGenerating() {
         _stream.value = _stream.value.copy(stopReason = "用户停止")
         generationJob?.cancel()
-        // generationJob 的置 null 与流状态重置由 executeSend 的 finally 块统一处理；
-        // 数据库写入由 executeSend 的 catch 块在被取消时统一处理，避免重复写入竞态。
-        _isGenerating.value = false
-        com.yue.moku.service.GenerationService.stop(appContext)
+        // finally 块统一清理 _isGenerating/stream/generationJob/Service；
+        // 这里不再重复写，避免与 finally 竞态。
     }
 
     fun saveKnowledge(value: KnowledgeEntity) = viewModelScope.launch { knowledgeDao.upsert(value.copy(updatedAt = System.currentTimeMillis())) }

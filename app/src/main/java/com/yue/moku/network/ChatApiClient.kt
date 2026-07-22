@@ -253,8 +253,7 @@ class ChatApiClient {
         val netloc = Regex("https?://(?:[^@\n]+@)?([^:\n/?]{2,})").find(baseUrl.trim())?.groupValues?.get(1)
             ?: return false
         return netloc.endsWith("api.openai.com") ||
-            netloc.endsWith("openai.azure.com") ||
-            netloc == "localhost" || netloc == "127.0.0.1"
+            netloc.endsWith("openai.azure.com")
     }
 
     private fun chatUrl(base: String): String {

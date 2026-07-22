@@ -45,7 +45,16 @@ object TokenEstimator {
         return cjk + other + ceil(ascii / 4.0).toInt()
     }
 
-    private fun isCjk(value: Int) = value in 0x3400..0x9FFF || value in 0xF900..0xFAFF
+    private fun isCjk(value: Int) =
+        value in 0x3040..0x30FF ||   // Hiragana + Katakana
+        value in 0x3400..0x9FFF ||   // CJK Unified + Extension A
+        value in 0xF900..0xFAFF ||   // CJK Compatibility
+        value in 0x20000..0x2A6DF || // CJK Extension B
+        value in 0x2A700..0x2B73F || // CJK Extension C
+        value in 0x2B740..0x2B81F || // CJK Extension D
+        value in 0x2B820..0x2CEAF || // CJK Extension E
+        value in 0x2CEB0..0x2EBEF || // CJK Extension F
+        value in 0x30000..0x3134F    // CJK Extension G/H
 }
 
 data class RetrievedKnowledge(val item: KnowledgeEntity, val score: Double)

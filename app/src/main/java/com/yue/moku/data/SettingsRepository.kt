@@ -42,7 +42,7 @@ class SettingsRepository(context: Context) {
             putBoolean("auto_recall", value.autoRecall)
             putInt("recall_count", value.recallCount.coerceIn(1, 20))
             putBoolean("auto_compress", value.autoCompress)
-            putFloat("compress_threshold", value.compressThreshold)
+            putFloat("compress_threshold", value.compressThreshold.coerceIn(0.3f, 0.99f))
             putBoolean("allow_ai_write_knowledge", value.allowAiWriteKnowledge)
         }
         _settings.value = load()
