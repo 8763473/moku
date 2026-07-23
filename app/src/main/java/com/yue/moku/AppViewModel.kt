@@ -320,8 +320,22 @@ class AppViewModel(
         }
     }
 
-    /** 从用户消息分叉：创建新对话，复制分叉点之前的历史，然后重新发送 */
-    fun regenerateFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
+    /** 在当前对话中重新发送 / 重新生成（不创建分支），直接替换原 user 消息并重新调用 API */
+    fun retryInPlace(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
+        if (_isGenerating.value || _isCompressing.value) return@launch
+        _isGenerating.value = true
+        try {
+            val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
+            if (effectiveText.isEmpty()) { _isGenerating.value = false; return@launch }
+            executeSend(effectiveText, existingUserMessage = userMessage)
+        } catch (t: Throwable) {
+            _isGenerating.value = false
+            _notice.value = friendlyError(t)
+        }
+    }
+
+    /** 从用户消息分叉：创建新分支对话，复制分叉点之前的历史，然后重新发送 */
+    fun branchFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
         try {
@@ -334,8 +348,8 @@ class AppViewModel(
         }
     }
 
-    /** 从 AI 消息分叉：以上一条 user 消息为分叉点创建新对话 */
-    fun regenerateFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
+    /** 从 AI 消息分叉：以上一条 user 消息为分叉点创建新分支对话 */
+    fun branchFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
         try {

@@ -502,7 +502,12 @@ fun ChatScreen(viewModel: AppViewModel) {
                                     showReasoning = settings.thinkingMode,
                                     onDelete = { pendingDelete = message },
                                     onEdit = if (!generating && message.role == "user") { -> editingMessage = message } else null,
-                                    onRegenerate = if (!generating) { -> pendingRegenerate = if (message.role == "user") RegenerateTarget.User(message) else RegenerateTarget.Ai(message) } else null,
+                                    onRegenerate = if (!generating && message.role == "user") {
+                                        { -> pendingRegenerate = RegenerateTarget.User(message, RegenerateMode.Retry) }
+                                    } else null,
+                                    onBranch = if (!generating) {
+                                        { -> pendingRegenerate = if (message.role == "user") RegenerateTarget.User(message, RegenerateMode.Branch) else RegenerateTarget.Ai(message, RegenerateMode.Branch) }
+                                    } else null,
                                     onReasoningOpened = { scrollTarget = index },
                                     tokensPerSecond = showTokensPerSec,
                                     elapsedMs = showElapsedMs,
@@ -569,7 +574,7 @@ fun ChatScreen(viewModel: AppViewModel) {
                     onClick = {
                         val newText = draftText.trim()
                         if (newText.isNotBlank()) {
-                            viewModel.regenerateFromUserMessage(target, editedContent = newText)
+                    viewModel.retryInPlace(target, editedContent = newText)
                         }
                         editingMessage = null
                     },
@@ -583,11 +588,18 @@ fun ChatScreen(viewModel: AppViewModel) {
     }
 
     pendingRegenerate?.let { target ->
-        val title = if (target is RegenerateTarget.User) "重新发送（创建新分支）" else "重新生成（创建新分支）"
-        val body = if (target is RegenerateTarget.User) {
-            "将创建新的分支对话，保留原对话不删除。新对话会包含当前消息及之前的历史。继续？"
-        } else {
-            "将创建新的分支对话，保留原对话不删除。新对话会包含上一条用户消息及之前的历史，并重新生成。继续？"
+        val title = when {
+            target is RegenerateTarget.User && target.mode == RegenerateMode.Retry -> "重新发送（当前对话）"
+            target is RegenerateTarget.User -> "重新发送（创建新分支）"
+            else -> "重新生成（创建新分支）"
+        }
+        val body = when {
+            target is RegenerateTarget.User && target.mode == RegenerateMode.Retry ->
+                "将用原消息内容在当前对话中重新生成 AI 回复。继续？"
+            target is RegenerateTarget.User ->
+                "将创建新的分支对话，保留原对话不删除。新对话会包含此消息之前的历史。继续？"
+            else ->
+                "将创建新的分支对话，保留原对话不删除。新对话会包含上一条用户消息及之前的历史，并重新生成。继续？"
         }
         AlertDialog(
             onDismissRequest = { pendingRegenerate = null },
@@ -596,8 +608,13 @@ fun ChatScreen(viewModel: AppViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     when (target) {
-                        is RegenerateTarget.User -> viewModel.regenerateFromUserMessage(target.message, editedContent = null)
-                        is RegenerateTarget.Ai -> viewModel.regenerateFromAiMessage(target.message)
+                        is RegenerateTarget.User -> {
+                            when (target.mode) {
+                                RegenerateMode.Retry -> viewModel.retryInPlace(target.message, editedContent = null)
+                                RegenerateMode.Branch -> viewModel.branchFromUserMessage(target.message)
+                            }
+                        }
+                        is RegenerateTarget.Ai -> viewModel.branchFromAiMessage(target.message)
                     }
                     pendingRegenerate = null
                 }) { Text("继续", color = MaterialTheme.colorScheme.primary) }
@@ -681,6 +698,7 @@ private fun MessageCard(
     onDelete: () -> Unit,
     onEdit: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
+    onBranch: (() -> Unit)? = null,
     onReasoningOpened: (() -> Unit)? = null,
     tokensPerSecond: Double = 0.0,
     elapsedMs: Long = 0L,
@@ -770,14 +788,14 @@ private fun MessageCard(
                             ).joinToString(" · ")
                             if (usage.isNotEmpty()) Text(usage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.weight(1f))
-                            if (onRegenerate != null) {
+                            if (onBranch != null) {
                                 TextButton(
-                                    onClick = onRegenerate,
+                                    onClick = onBranch,
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                 ) {
-                                    Icon(Icons.Outlined.AutoAwesome, "重新生成", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                    Icon(Icons.AutoMirrored.Filled.AltRoute, "分支", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.width(4.dp))
-                                    Text("分叉", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                    Text("分支", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
                             IconButton(onClick = { clipboard.setText(AnnotatedString(message.content)) }, modifier = Modifier.size(32.dp)) {
@@ -822,9 +840,19 @@ private fun MessageCard(
                                 onClick = onRegenerate,
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             ) {
-                                Icon(Icons.Outlined.Refresh, "分叉重新发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                Icon(Icons.Outlined.Refresh, "重新发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(4.dp))
-                                Text("分叉发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                Text("重新发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                        if (onBranch != null) {
+                            TextButton(
+                                onClick = onBranch,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.AltRoute, "分支发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.secondary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("分支发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
                             }
                         }
                         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
@@ -838,9 +866,10 @@ private fun MessageCard(
 }
 
 private sealed class RegenerateTarget {
-    data class User(val message: MessageEntity) : RegenerateTarget()
-    data class Ai(val message: MessageEntity) : RegenerateTarget()
+    data class User(val message: MessageEntity, val mode: RegenerateMode) : RegenerateTarget()
+    data class Ai(val message: MessageEntity, val mode: RegenerateMode) : RegenerateTarget()
 }
+private enum class RegenerateMode { Retry, Branch }
 
 @Composable
 private fun MetricChip(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
