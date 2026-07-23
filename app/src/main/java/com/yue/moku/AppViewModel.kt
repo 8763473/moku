@@ -228,6 +228,7 @@ class AppViewModel(
             var promptTokens: Int? = null
             var completionTokens: Int? = null
             // 工具调用累加器：流式响应里 tool_calls.arguments 会分多片到达
+            var lastStreamUpdate = 0L
             container.api.chat(currentSettings, context.messages, tools = tools).collect { delta ->
                 rawContent += delta.content
                 rawReasoning += delta.reasoning
@@ -235,14 +236,19 @@ class AppViewModel(
                 completionTokens = delta.completionTokens ?: completionTokens
                 if (!delta.toolCallName.isNullOrBlank()) toolCallName = delta.toolCallName
                 delta.toolCallArgumentsChunk?.let { toolCallArgJson.append(it) }
-                val parsed = ThinkParser.parse(rawContent, rawReasoning)
-                _stream.value = StreamState(assistantId, parsed.content, parsed.reasoning)
-                val elapsedMs = System.currentTimeMillis() - startedAt
-                val elapsedSec = elapsedMs / 1000.0
-                val totalTokens = completionTokens
-                    ?: TokenEstimator.estimate(rawContent + rawReasoning)
-                val tps = if (elapsedSec > 0.1) totalTokens / elapsedSec else 0.0
-                _stream.value = _stream.value.copy(tokensPerSecond = tps, elapsedMs = elapsedMs)
+                // 节流：每 80ms 更新一次 UI，减少每个 token 触发 Compose 重组造成的卡顿
+                val now = System.currentTimeMillis()
+                if (now - lastStreamUpdate >= 80) {
+                    lastStreamUpdate = now
+                    val parsed = ThinkParser.parse(rawContent, rawReasoning)
+                    _stream.value = StreamState(assistantId, parsed.content, parsed.reasoning)
+                    val elapsedMs = now - startedAt
+                    val elapsedSec = elapsedMs / 1000.0
+                    val totalTokens = completionTokens
+                        ?: TokenEstimator.estimate(rawContent + rawReasoning)
+                    val tps = if (elapsedSec > 0.1) totalTokens / elapsedSec else 0.0
+                    _stream.value = _stream.value.copy(tokensPerSecond = tps, elapsedMs = elapsedMs)
+                }
             }
             val parsed = ThinkParser.parse(rawContent, rawReasoning)
             val finalElapsed = System.currentTimeMillis() - startedAt
