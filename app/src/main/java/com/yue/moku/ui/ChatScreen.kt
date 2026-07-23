@@ -788,8 +788,10 @@ private fun MessageCard(
                                 message.promptTokens?.let { "输入 ${formatTokens(it)}" },
                                 message.completionTokens?.let { "输出 ${formatTokens(it)}" },
                             ).joinToString(" · ")
-                            if (usage.isNotEmpty()) Text(usage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.weight(1f))
+                            if (usage.isNotEmpty()) {
+                                Text(usage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(Modifier.weight(1f))
+                            }
                             if (onBranch != null) {
                                 TextButton(
                                     onClick = onBranch,
