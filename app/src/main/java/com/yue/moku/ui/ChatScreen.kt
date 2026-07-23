@@ -895,7 +895,7 @@ private fun Composer(
     Surface(shadowElevation = 8.dp) {
         Row(
             Modifier.fillMaxWidth().padding(10.dp),
-            verticalAlignment = Alignment.Bottom,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedTextField(
                 value = draft,
