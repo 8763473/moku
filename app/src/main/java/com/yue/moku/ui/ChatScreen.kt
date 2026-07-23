@@ -831,16 +831,17 @@ private fun MessageCard(
                         }
                     }
                 } else if (isUser && message.content.isNotBlank()) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                         if (onEdit != null) {
-                            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Outlined.Edit, "编辑", Modifier.size(17.dp))
+                            IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
+                                Icon(Icons.Outlined.Edit, "编辑", Modifier.size(18.dp))
                             }
                         }
                         if (onRegenerate != null) {
                             TextButton(
                                 onClick = onRegenerate,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(36.dp),
                             ) {
                                 Icon(Icons.Outlined.Refresh, "重新发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(4.dp))
@@ -850,15 +851,16 @@ private fun MessageCard(
                         if (onBranch != null) {
                             TextButton(
                                 onClick = onBranch,
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                modifier = Modifier.height(36.dp),
                             ) {
                                 Icon(Icons.AutoMirrored.Filled.AltRoute, "分支发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.secondary)
                                 Spacer(Modifier.width(4.dp))
                                 Text("分支发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
                             }
                         }
-                        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Outlined.DeleteOutline, "删除", Modifier.size(17.dp), tint = MaterialTheme.colorScheme.error)
+                        IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Outlined.DeleteOutline, "删除", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
