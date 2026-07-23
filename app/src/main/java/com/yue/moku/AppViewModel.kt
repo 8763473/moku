@@ -128,10 +128,8 @@ class AppViewModel(
             if ((value.id == _activeConversationId.value ||
                 branches.any { it.id == _activeConversationId.value }) &&
                 _isGenerating.value) stopGenerating()
-            // 级联删除所有子分支
-            for (branch: ConversationEntity in branches) {
-                conversationDao.delete(branch)
-            }
+            // 不需要级联删除子分支 — 子分支是独立对话，应该不被删除
+            // 只删除 value 本身，子分支的 parentBranchId 已被设为旧 parent 因此成为根对话
             conversationDao.delete(value)
             if (value.id == _activeConversationId.value) {
                 _activeConversationId.value = conversationDao.latest()?.id
