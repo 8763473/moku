@@ -133,6 +133,14 @@ fun ChatScreen(viewModel: AppViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    // 通过跳转 state 触发滚动，避免在 LazyColumn scope 内直接捕获 listState
+    var scrollTarget by remember { mutableStateOf(-1) }
+    LaunchedEffect(scrollTarget) {
+        if (scrollTarget >= 0) {
+            listState.scrollToItem(scrollTarget, Int.MAX_VALUE)
+            scrollTarget = -1
+        }
+    }
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val snackbar = remember { SnackbarHostState() }
 
@@ -168,7 +176,7 @@ fun ChatScreen(viewModel: AppViewModel) {
             listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE)
         }
     }
-    // 以最后一项的底端为锚点；Int.MAX_VALUE 会被 LazyColumn 限制到真实最大滚动距离。
+    // 流式生成时仅在新 token 到达时才触发自动滚动，避免每个 token 都重组
     LaunchedEffect(stream.content.length, stream.reasoning.length) {
         if (messages.isNotEmpty() && autoFollow && !isUserDragging) {
             listState.scrollToItem(messages.lastIndex, Int.MAX_VALUE)
@@ -479,20 +487,26 @@ fun ChatScreen(viewModel: AppViewModel) {
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             itemsIndexed(messages, key = { _, item -> item.id }) { index, message ->
-                                val shown = if (message.id == stream.messageId) {
+                                // 流式生成中仅正在拼接的消息需要实时更新，其余消息保持静态以避免不必要的重组
+                                val shown = if (stream.messageId > 0L && message.id == stream.messageId) {
                                     message.copy(content = stream.content, reasoning = stream.reasoning)
                                 } else message
+                                // 稳定化 lambda 引用：避免每个 token 都创建新的 callback 实例
+                                val isStreamingMessage = generating && stream.messageId > 0L && message.id == stream.messageId
+                                val showTokensPerSec = if (isStreamingMessage) stream.tokensPerSecond else 0.0
+                                val showElapsedMs = if (isStreamingMessage) stream.elapsedMs else 0L
+                                val showStopReason = if (isStreamingMessage) stream.stopReason else null
                                 MessageCard(
                                     shown,
-                                    generating && message.id == stream.messageId,
+                                    streaming = isStreamingMessage,
                                     showReasoning = settings.thinkingMode,
                                     onDelete = { pendingDelete = message },
                                     onEdit = if (!generating && message.role == "user") { -> editingMessage = message } else null,
                                     onRegenerate = if (!generating) { -> pendingRegenerate = if (message.role == "user") RegenerateTarget.User(message) else RegenerateTarget.Ai(message) } else null,
-                                    onReasoningOpened = { scope.launch { listState.animateScrollToItem(index) } },
-                                    tokensPerSecond = if (generating && shown.id == stream.messageId) stream.tokensPerSecond else 0.0,
-                                    elapsedMs = if (generating && shown.id == stream.messageId) stream.elapsedMs else 0L,
-                                    stopReason = if (generating && shown.id == stream.messageId) stream.stopReason else null,
+                                    onReasoningOpened = { scrollTarget = index },
+                                    tokensPerSecond = showTokensPerSec,
+                                    elapsedMs = showElapsedMs,
+                                    stopReason = showStopReason,
                                 )
                             }
                         }
