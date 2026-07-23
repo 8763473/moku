@@ -60,6 +60,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -69,11 +70,13 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -82,6 +85,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -102,6 +106,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.yue.moku.AppViewModel
 import com.yue.moku.StreamState
+import com.yue.moku.data.KnowledgeEntity
 import com.yue.moku.data.MessageEntity
 import com.yue.moku.domain.ContextBuilder
 import com.yue.moku.domain.KnowledgeRetriever
@@ -130,6 +135,8 @@ fun ChatScreen(viewModel: AppViewModel) {
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     var previewingSummary by remember { mutableStateOf<String?>(null) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    // 手动添加知识库：从消息卡片触发，预填内容
+    var addingKnowledge by remember { mutableStateOf<KnowledgeEntity?>(null) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -508,6 +515,14 @@ fun ChatScreen(viewModel: AppViewModel) {
                                     onBranch = if (!generating) {
                                         { -> pendingRegenerate = if (message.role == "user") RegenerateTarget.User(message, RegenerateMode.Branch) else RegenerateTarget.Ai(message, RegenerateMode.Branch) }
                                     } else null,
+                                    onAddToKnowledge = if (!generating && message.role == "assistant" && message.content.isNotBlank()) {
+                                        { -> addingKnowledge = KnowledgeEntity(
+                                            title = message.content.take(64).replace('\n', ' '),
+                                            content = message.content,
+                                            category = "资料",
+                                            updatedAt = System.currentTimeMillis(),
+                                        ) }
+                                    } else null,
                                     onReasoningOpened = { scrollTarget = index },
                                     tokensPerSecond = showTokensPerSec,
                                     elapsedMs = showElapsedMs,
@@ -639,6 +654,18 @@ fun ChatScreen(viewModel: AppViewModel) {
             confirmButton = { TextButton(onClick = { previewingSummary = null }) { Text("关闭") } },
         )
     }
+
+    // 手动添加到知识库：复用 KnowledgeScreen 的 KnowledgeEditor
+    addingKnowledge?.let { prefill ->
+        KnowledgeEditorInline(
+            prefill = prefill,
+            onDismiss = { addingKnowledge = null },
+            onSave = { entity ->
+                viewModel.saveKnowledge(entity)
+                addingKnowledge = null
+            },
+        )
+    }
 }
 
 @Composable
@@ -701,6 +728,7 @@ private fun MessageCard(
     onEdit: (() -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onBranch: (() -> Unit)? = null,
+    onAddToKnowledge: (() -> Unit)? = null,
     onReasoningOpened: (() -> Unit)? = null,
     tokensPerSecond: Double = 0.0,
     elapsedMs: Long = 0L,
@@ -802,6 +830,16 @@ private fun MessageCard(
                                     Text("分支", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
+                            if (onAddToKnowledge != null) {
+                                TextButton(
+                                    onClick = onAddToKnowledge,
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Icon(Icons.Outlined.BookmarkAdd, "收藏到知识库", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.tertiary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("收藏", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.tertiary)
+                                }
+                            }
                             IconButton(onClick = { clipboard.setText(AnnotatedString(message.content)) }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Outlined.ContentCopy, "复制", Modifier.size(17.dp))
                             }
@@ -884,6 +922,92 @@ private fun MetricChip(icon: androidx.compose.ui.graphics.vector.ImageVector, te
         Spacer(Modifier.width(4.dp))
         Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+/**
+ * 轻量版知识编辑器，用于从消息卡片触发"收藏到知识库"，不带 Scaffold。
+ * 复用 KnowledgeScreen 的编辑逻辑，但在 AlertDialog 中嵌入编辑表单。
+ */
+@Composable
+private fun KnowledgeEditorInline(
+    prefill: KnowledgeEntity,
+    onDismiss: () -> Unit,
+    onSave: (KnowledgeEntity) -> Unit,
+) {
+    var title by remember(prefill) { mutableStateOf(prefill.title) }
+    var content by remember(prefill) { mutableStateOf(prefill.content) }
+    var tags by remember(prefill) { mutableStateOf(prefill.tags) }
+    var category by remember(prefill) { mutableStateOf(prefill.category) }
+    var priority by remember(prefill) { mutableFloatStateOf((prefill.priority).toFloat()) }
+    var pinned by remember(prefill) { mutableStateOf(prefill.isPinned) }
+    val categories = listOf("要求", "设定", "人物", "资料")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("收藏到知识库") },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.heightIn(max = 420.dp),
+            ) {
+                item {
+                    Text("类型", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        categories.forEach { value ->
+                            FilterChip(selected = category == value, onClick = { category = value }, label = { Text(value) })
+                        }
+                    }
+                }
+                item {
+                    OutlinedTextField(title, { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
+                item {
+                    OutlinedTextField(
+                        content,
+                        { content = it },
+                        label = { Text(if (category == "要求") "具体要求（会原样提供给模型）" else "内容") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 5,
+                        maxLines = 10,
+                    )
+                }
+                item {
+                    OutlinedTextField(tags, { tags = it }, label = { Text("标签，用逗号分隔") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                }
+                item {
+                    Text("优先级 ${priority.toInt()}", style = MaterialTheme.typography.labelLarge)
+                    Slider(value = priority, onValueChange = { priority = it }, valueRange = 1f..5f, steps = 3)
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("固定调用", style = MaterialTheme.typography.bodyLarge)
+                            Text("每次发送都注入这条内容", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = pinned, onCheckedChange = { pinned = it })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(prefill.copy(
+                        title = title.trim(),
+                        content = content.trim(),
+                        tags = tags.trim(),
+                        category = category,
+                        priority = priority.toInt(),
+                        isPinned = pinned,
+                        isEnabled = true,
+                        updatedAt = System.currentTimeMillis(),
+                    ))
+                },
+                enabled = title.isNotBlank() && content.isNotBlank(),
+            ) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 @Composable
