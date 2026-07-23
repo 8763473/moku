@@ -11,7 +11,7 @@ class MoKuApplication : Application() {
     val container by lazy {
         AppContainer(
             database = Room.databaseBuilder(this, AppDatabase::class.java, "moku.db")
-                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
+                .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
                 .fallbackToDestructiveMigration(true)
                 .build(),
             settings = SettingsRepository(this),
