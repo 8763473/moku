@@ -756,13 +756,18 @@ private fun MessageCard(
                             ).joinToString(" · ")
                             if (usage.isNotEmpty()) Text(usage, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.weight(1f))
+                            if (onRegenerate != null) {
+                                TextButton(
+                                    onClick = onRegenerate,
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                ) {
+                                    Icon(Icons.Outlined.AutoAwesome, "重新生成", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("分叉", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                                }
+                            }
                             IconButton(onClick = { clipboard.setText(AnnotatedString(message.content)) }, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Outlined.ContentCopy, "复制", Modifier.size(17.dp))
-                            }
-                            if (onRegenerate != null) {
-                                IconButton(onClick = onRegenerate, modifier = Modifier.size(32.dp)) {
-                                    Icon(Icons.Outlined.AutoAwesome, "重新生成", Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
-                                }
                             }
                             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                                 Icon(Icons.Outlined.DeleteOutline, "删除", Modifier.size(17.dp), tint = MaterialTheme.colorScheme.error)
@@ -799,8 +804,13 @@ private fun MessageCard(
                             }
                         }
                         if (onRegenerate != null) {
-                            IconButton(onClick = onRegenerate, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Outlined.Refresh, "重新发送", Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
+                            TextButton(
+                                onClick = onRegenerate,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Icon(Icons.Outlined.Refresh, "分叉重新发送", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("分叉发送", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                         IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
