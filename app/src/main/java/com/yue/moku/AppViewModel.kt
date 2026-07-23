@@ -145,7 +145,21 @@ class AppViewModel(
     fun deleteMessage(value: MessageEntity) = viewModelScope.launch {
         try {
             if (_stream.value.messageId == value.id) stopGenerating()
+            // 同时删除 forkMessageId 指向此消息的对话（该对话建立在由此消息分叉的基础上）
             messageDao.delete(value)
+            // 如果当前对话只有这条消息和一条空 assistant，且是非根对话（分支对话），则整个对话也删除
+            val messages = messageDao.listForConversation(value.conversationId)
+            if (messages.isEmpty() || messages.all { it.isError && it.content.isBlank() }) {
+                val conv = conversationDao.get(value.conversationId)
+                if (conv != null && conv.parentBranchId != null) {
+                    conversationDao.delete(conv)
+                    // 如果被删的是当前活跃对话，切换到最新对话
+                    if (value.conversationId == _activeConversationId.value) {
+                        _activeConversationId.value = conversationDao.latest()?.id
+                            ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+                    }
+                }
+            }
         } catch (t: Throwable) {
             _notice.value = friendlyError(t)
         }
