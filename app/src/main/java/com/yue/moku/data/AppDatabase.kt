@@ -38,22 +38,35 @@ abstract class AppDatabase : RoomDatabase() {
          */
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                // 1. 创建新表（不含 REFERENCES 外键）
-                db.execSQL("""
-                    CREATE TABLE conversations_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                        title TEXT NOT NULL,
-                        createdAt INTEGER NOT NULL,
-                        updatedAt INTEGER NOT NULL,
-                        parentBranchId INTEGER,
-                        forkMessageId INTEGER
-                    )
-                """.trimIndent())
-                // 2. 复制数据
-                db.execSQL("INSERT INTO conversations_new (id, title, createdAt, updatedAt) SELECT id, title, createdAt, updatedAt FROM conversations")
-                // 3. 删旧建新
-                db.execSQL("DROP TABLE conversations")
-                db.execSQL("ALTER TABLE conversations_new RENAME TO conversations")
+                // 先检查旧表是否已经有 parentBranchId / forkMessageId 列
+                val cursor = db.query("PRAGMA table_info(conversations)")
+                val columns = mutableListOf<String>()
+                while (cursor.moveToNext()) {
+                    columns.add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+                }
+                cursor.close()
+                val hasBranchColumns = columns.contains("parentBranchId") && columns.contains("forkMessageId")
+
+                if (hasBranchColumns) {
+                    // 旧表已有分支列：保留数据，重建表以移除 SQLite 层 REFERENCES 外键
+                    db.execSQL("""
+                        CREATE TABLE conversations_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            title TEXT NOT NULL,
+                            createdAt INTEGER NOT NULL,
+                            updatedAt INTEGER NOT NULL,
+                            parentBranchId INTEGER,
+                            forkMessageId INTEGER
+                        )
+                    """.trimIndent())
+                    db.execSQL("INSERT INTO conversations_new (id, title, createdAt, updatedAt, parentBranchId, forkMessageId) SELECT id, title, createdAt, updatedAt, parentBranchId, forkMessageId FROM conversations")
+                    db.execSQL("DROP TABLE conversations")
+                    db.execSQL("ALTER TABLE conversations_new RENAME TO conversations")
+                } else {
+                    // 旧表无分支列（从 v1/v2 升级）：只需添加列
+                    db.execSQL("ALTER TABLE conversations ADD COLUMN parentBranchId INTEGER")
+                    db.execSQL("ALTER TABLE conversations ADD COLUMN forkMessageId INTEGER")
+                }
             }
         }
     }

@@ -314,7 +314,7 @@ class AppViewModel(
         }
     }
 
-    /** 从用户消息分叉：创建新对话，复制该消息及之前的历史，然后重新生成 */
+    /** 从用户消息分叉：创建新对话，复制分叉点之前的历史，然后重新发送 */
     fun regenerateFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
@@ -346,8 +346,11 @@ class AppViewModel(
     }
 
     /**
-     * 分支操作：复制对话中 [forkPoint] 及其之前的所有消息到一个新对话，
-     * 新对话的 parentBranchId 指向原对话，然后在新对话中重新发送。
+     * 分支操作：复制 [forkPoint] 之前（不含 forkPoint 自身）的所有消息到新对话，
+     * 新对话的 parentBranchId 指向原对话。然后切换到新对话并发送 newPrompt。
+     *
+     * 注意：forkPoint 是分叉位置的 user 消息 (role == "user")，不应被复制到新
+     * 对话中 — 否则 executeSend(newPrompt) 会再插入一条 user 消息导致重复。
      */
     private suspend fun copyMessagesUpTo(forkPoint: MessageEntity, newPrompt: String) {
         val oldConversationId = forkPoint.conversationId
@@ -356,9 +359,9 @@ class AppViewModel(
             return
         }
         val history = messageDao.listForConversation(oldConversationId)
-        // 取 forkPoint 及之前的所有消息
-        val messagesToCopy = history.takeWhile { it.id <= forkPoint.id }
-            .filter { it.role != "system" } // system 摘要不复制
+        // 取 forkPoint 之前的所有消息（不含 forkPoint 自身），
+        // forkPoint 是 user 消息，由 executeSend 重新插入。
+        val messagesToCopy = history.filter { it.id < forkPoint.id && it.role != "system" }
         // 创建新对话作为分支
         val branchTitle = if (oldConversation.title == "新的写作") effectiveBranchTitle(history, forkPoint)
         else "${oldConversation.title} (分支)"
