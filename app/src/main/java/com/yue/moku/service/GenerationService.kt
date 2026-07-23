@@ -7,16 +7,29 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.yue.moku.MainActivity
 import com.yue.moku.R
+import android.util.Log
 
 class GenerationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 14+: 如果用户未授予通知权限，startForeground 会抛 SecurityException 导致崩溃。
+        // 这里优雅降级为普通 Service 启动，避免闪退。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w(TAG, "通知权限未授予，跳过前台 Service；流式生成仍会在后台运行但可能被系统终止")
+                return START_NOT_STICKY
+            }
+        }
         ensureChannel()
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -65,6 +78,7 @@ class GenerationService : Service() {
     companion object {
         const val CHANNEL_ID = "ai_generation"
         const val NOTIFICATION_ID = 1001
+        private const val TAG = "GenerationService"
 
         fun start(context: Context) {
             val intent = Intent(context, GenerationService::class.java)

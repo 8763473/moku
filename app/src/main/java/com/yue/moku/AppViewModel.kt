@@ -96,8 +96,12 @@ class AppViewModel(
 
     init {
         viewModelScope.launch {
-            _activeConversationId.value = conversationDao.latest()?.id
-                ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+            try {
+                _activeConversationId.value = conversationDao.latest()?.id
+                    ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+            } catch (t: Throwable) {
+                _notice.value = "数据库初始化失败：${t.message}"
+            }
         }
     }
 
@@ -109,30 +113,42 @@ class AppViewModel(
     }
 
     fun newConversation() = viewModelScope.launch {
-        if (_isGenerating.value) stopGenerating()
-        _activeConversationId.value = conversationDao.insert(ConversationEntity(title = "新的写作"))
-        _retrieved.value = emptyList()
+        try {
+            if (_isGenerating.value) stopGenerating()
+            _activeConversationId.value = conversationDao.insert(ConversationEntity(title = "新的写作"))
+            _retrieved.value = emptyList()
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     fun deleteConversation(value: ConversationEntity) = viewModelScope.launch {
-        val branches: List<ConversationEntity> = conversationDao.listBranches(value.id)
-        if ((value.id == _activeConversationId.value ||
-            branches.any { it.id == _activeConversationId.value }) &&
-            _isGenerating.value) stopGenerating()
-        // 级联删除所有子分支
-        for (branch: ConversationEntity in branches) {
-            conversationDao.delete(branch)
-        }
-        conversationDao.delete(value)
-        if (value.id == _activeConversationId.value) {
-            _activeConversationId.value = conversationDao.latest()?.id
-                ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+        try {
+            val branches: List<ConversationEntity> = conversationDao.listBranches(value.id)
+            if ((value.id == _activeConversationId.value ||
+                branches.any { it.id == _activeConversationId.value }) &&
+                _isGenerating.value) stopGenerating()
+            // 级联删除所有子分支
+            for (branch: ConversationEntity in branches) {
+                conversationDao.delete(branch)
+            }
+            conversationDao.delete(value)
+            if (value.id == _activeConversationId.value) {
+                _activeConversationId.value = conversationDao.latest()?.id
+                    ?: conversationDao.insert(ConversationEntity(title = "新的写作"))
+            }
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
         }
     }
 
     fun deleteMessage(value: MessageEntity) = viewModelScope.launch {
-        if (_stream.value.messageId == value.id) stopGenerating()
-        messageDao.delete(value)
+        try {
+            if (_stream.value.messageId == value.id) stopGenerating()
+            messageDao.delete(value)
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     fun send(text: String) {
@@ -142,65 +158,76 @@ class AppViewModel(
         // 先标记生成中再启动协程，消除 TOCTOU 竞态窗口
         _isGenerating.value = true
         generationJob = viewModelScope.launch {
-            executeSend(prompt)
+            try {
+                executeSend(prompt)
+            } catch (t: Throwable) {
+                _isGenerating.value = false
+                _notice.value = friendlyError(t)
+            }
         }
     }
 
     private suspend fun executeSend(prompt: String, existingUserMessage: MessageEntity? = null) {
         val conversationId = _activeConversationId.value
         val currentSettings = settings.value
-        val conversation = conversationDao.get(conversationId) ?: run {
-            _isGenerating.value = false
-            return
-        }
         // 自动压缩放在 try 之前：如果压缩过程中 cancel 了当前协程，
         // 外部 send() 的 _isGenerating 标记需要回退。
         runCatching { maybeAutoCompress() }
-        com.yue.moku.service.GenerationService.start(appContext)
-        // existingUserMessage 非 null 表示"重新发送/重新生成"：复用原 user 消息，避免新增一条
-        if (existingUserMessage != null) {
-            if (prompt != existingUserMessage.content) {
-                messageDao.update(existingUserMessage.copy(content = prompt))
-            }
-        } else {
-            messageDao.insert(MessageEntity(conversationId = conversationId, role = "user", content = prompt))
-        }
-        conversationDao.update(conversation.copy(
-            title = if (conversation.title == "新的写作") prompt.replace('\n', ' ').take(24) else conversation.title,
-            updatedAt = System.currentTimeMillis(),
-        ))
-
-        val matches = if (currentSettings.autoRecall) {
-            KnowledgeRetriever.retrieve(prompt, knowledgeDao.listEnabled(), currentSettings.recallCount)
-        } else emptyList()
-        _retrieved.value = matches
-        val history = messageDao.listForConversation(conversationId)
-        val isWriteIntent = currentSettings.allowAiWriteKnowledge &&
-            com.yue.moku.domain.KnowledgeWriteIntent.isWriteRequest(prompt)
-        val tools = if (isWriteIntent) listOf(com.yue.moku.domain.KnowledgeWriteIntent.buildToolSchema()) else null
-        val systemPrompt = if (tools != null) {
-            currentSettings.systemPrompt + "\n\n" + com.yue.moku.domain.KnowledgeWriteIntent.systemPromptHint()
-        } else {
-            currentSettings.systemPrompt
-        }
-        val context = ContextBuilder.build(
-            systemPrompt = systemPrompt,
-            memoryPrompt = KnowledgeRetriever.toPrompt(matches),
-            history = history,
-            contextWindow = currentSettings.contextWindow,
-        )
-        val startedAt = System.currentTimeMillis()
-        val assistantCreatedAt = System.currentTimeMillis()
-        val assistantId = messageDao.insert(MessageEntity(conversationId = conversationId, role = "assistant", content = "", createdAt = assistantCreatedAt))
-        _stream.value = StreamState(messageId = assistantId)
+        // 整个生成流程（含 DB 读写、Service 启动、API 调用）用统一 try-catch-finally 包裹，
+        // 避免任何未捕获异常逃逸到 viewModelScope 导致进程崩溃。
+        var assistantId = 0L
+        var context: ContextBuilder.Result? = null
+        var startedAt = 0L
+        var assistantCreatedAt = 0L
         var rawContent = ""
         var rawReasoning = ""
-        var promptTokens: Int? = null
-        var completionTokens: Int? = null
-        // 工具调用累加器：流式响应里 tool_calls.arguments 会分多片到达
         var toolCallName: String? = null
         var toolCallArgJson = StringBuilder()
         try {
+            val conversation = conversationDao.get(conversationId) ?: run {
+                _isGenerating.value = false
+                return
+            }
+            com.yue.moku.service.GenerationService.start(appContext)
+            // existingUserMessage 非 null 表示"重新发送/重新生成"：复用原 user 消息，避免新增一条
+            if (existingUserMessage != null) {
+                if (prompt != existingUserMessage.content) {
+                    messageDao.update(existingUserMessage.copy(content = prompt))
+                }
+            } else {
+                messageDao.insert(MessageEntity(conversationId = conversationId, role = "user", content = prompt))
+            }
+            conversationDao.update(conversation.copy(
+                title = if (conversation.title == "新的写作") prompt.replace('\n', ' ').take(24) else conversation.title,
+                updatedAt = System.currentTimeMillis(),
+            ))
+
+            val matches = if (currentSettings.autoRecall) {
+                KnowledgeRetriever.retrieve(prompt, knowledgeDao.listEnabled(), currentSettings.recallCount)
+            } else emptyList()
+            _retrieved.value = matches
+            val history = messageDao.listForConversation(conversationId)
+            val isWriteIntent = currentSettings.allowAiWriteKnowledge &&
+                com.yue.moku.domain.KnowledgeWriteIntent.isWriteRequest(prompt)
+            val tools = if (isWriteIntent) listOf(com.yue.moku.domain.KnowledgeWriteIntent.buildToolSchema()) else null
+            val systemPrompt = if (tools != null) {
+                currentSettings.systemPrompt + "\n\n" + com.yue.moku.domain.KnowledgeWriteIntent.systemPromptHint()
+            } else {
+                currentSettings.systemPrompt
+            }
+            context = ContextBuilder.build(
+                systemPrompt = systemPrompt,
+                memoryPrompt = KnowledgeRetriever.toPrompt(matches),
+                history = history,
+                contextWindow = currentSettings.contextWindow,
+            )
+            startedAt = System.currentTimeMillis()
+            assistantCreatedAt = System.currentTimeMillis()
+            assistantId = messageDao.insert(MessageEntity(conversationId = conversationId, role = "assistant", content = "", createdAt = assistantCreatedAt))
+            _stream.value = StreamState(messageId = assistantId)
+            var promptTokens: Int? = null
+            var completionTokens: Int? = null
+            // 工具调用累加器：流式响应里 tool_calls.arguments 会分多片到达
             container.api.chat(currentSettings, context.messages, tools = tools).collect { delta ->
                 rawContent += delta.content
                 rawReasoning += delta.reasoning
@@ -244,33 +271,39 @@ class AppViewModel(
                 stopReason = "生成完成",
             ))
         } catch (t: CancellationException) {
-            // 用户主动停止：保存当前部分内容，不标记为错误
-            val parsed = ThinkParser.parse(rawContent, rawReasoning)
-            val partialElapsed = System.currentTimeMillis() - startedAt
-            messageDao.update(MessageEntity(
-                id = assistantId,
-                conversationId = conversationId,
-                role = "assistant",
-                content = parsed.content.ifBlank { "（生成已停止）" },
-                reasoning = parsed.reasoning,
-                createdAt = assistantCreatedAt,
-                generationMs = partialElapsed.takeIf { it > 0 },
-                stopReason = "用户停止",
-            ))
+            // 用户主动停止：如果 assistant 消息已插入，保存部分内容；否则仅清理
+            val savedAssistantId = assistantId
+            if (savedAssistantId > 0) {
+                val parsed = ThinkParser.parse(rawContent, rawReasoning)
+                val partialElapsed = if (startedAt > 0) System.currentTimeMillis() - startedAt else 0L
+                messageDao.update(MessageEntity(
+                    id = savedAssistantId,
+                    conversationId = conversationId,
+                    role = "assistant",
+                    content = parsed.content.ifBlank { "（生成已停止）" },
+                    reasoning = parsed.reasoning,
+                    createdAt = assistantCreatedAt,
+                    generationMs = partialElapsed.takeIf { it > 0 },
+                    stopReason = "用户停止",
+                ))
+            }
         } catch (t: Throwable) {
             val message = friendlyError(t)
-            val partialElapsed = System.currentTimeMillis() - startedAt
-            messageDao.update(MessageEntity(
-                id = assistantId,
-                conversationId = conversationId,
-                role = "assistant",
-                content = message,
-                reasoning = rawReasoning,
-                createdAt = assistantCreatedAt,
-                isError = true,
-                stopReason = message,
-                generationMs = partialElapsed,
-            ))
+            val savedAssistantId = assistantId
+            if (savedAssistantId > 0) {
+                val partialElapsed = if (startedAt > 0) System.currentTimeMillis() - startedAt else 0L
+                messageDao.update(MessageEntity(
+                    id = savedAssistantId,
+                    conversationId = conversationId,
+                    role = "assistant",
+                    content = message,
+                    reasoning = rawReasoning,
+                    createdAt = assistantCreatedAt,
+                    isError = true,
+                    stopReason = message,
+                    generationMs = partialElapsed,
+                ))
+            }
             _stream.value = _stream.value.copy(stopReason = message)
             _notice.value = message
         } finally {
@@ -285,21 +318,31 @@ class AppViewModel(
     fun regenerateFromUserMessage(userMessage: MessageEntity, editedContent: String? = null) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
-        val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
-        if (effectiveText.isEmpty()) { _isGenerating.value = false; return@launch }
-        copyMessagesUpTo(userMessage, effectiveText)
+        try {
+            val effectiveText = editedContent?.trim().orEmpty().ifBlank { userMessage.content }
+            if (effectiveText.isEmpty()) { _isGenerating.value = false; return@launch }
+            copyMessagesUpTo(userMessage, effectiveText)
+        } catch (t: Throwable) {
+            _isGenerating.value = false
+            _notice.value = friendlyError(t)
+        }
     }
 
     /** 从 AI 消息分叉：以上一条 user 消息为分叉点创建新对话 */
     fun regenerateFromAiMessage(aiMessage: MessageEntity) = viewModelScope.launch {
         if (_isGenerating.value || _isCompressing.value) return@launch
         _isGenerating.value = true
-        val history = messageDao.listForConversation(aiMessage.conversationId)
-        val userMessage = history.lastOrNull { it.role == "user" && it.id < aiMessage.id } ?: run {
+        try {
+            val history = messageDao.listForConversation(aiMessage.conversationId)
+            val userMessage = history.lastOrNull { it.role == "user" && it.id < aiMessage.id } ?: run {
+                _isGenerating.value = false
+                return@launch
+            }
+            copyMessagesUpTo(userMessage, userMessage.content)
+        } catch (t: Throwable) {
             _isGenerating.value = false
-            return@launch
+            _notice.value = friendlyError(t)
         }
-        copyMessagesUpTo(userMessage, userMessage.content)
     }
 
     /**
@@ -352,8 +395,20 @@ class AppViewModel(
         // 这里不再重复写，避免与 finally 竞态。
     }
 
-    fun saveKnowledge(value: KnowledgeEntity) = viewModelScope.launch { knowledgeDao.upsert(value.copy(updatedAt = System.currentTimeMillis())) }
-    fun deleteKnowledge(value: KnowledgeEntity) = viewModelScope.launch { knowledgeDao.delete(value) }
+    fun saveKnowledge(value: KnowledgeEntity) = viewModelScope.launch {
+        try {
+            knowledgeDao.upsert(value.copy(updatedAt = System.currentTimeMillis()))
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
+    }
+    fun deleteKnowledge(value: KnowledgeEntity) = viewModelScope.launch {
+        try {
+            knowledgeDao.delete(value)
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
+    }
     fun saveSettings(value: ApiSettings) {
         container.settings.save(value)
         _notice.value = "设置已保存"
@@ -361,38 +416,54 @@ class AppViewModel(
 
     /** 主页快捷切换思考模式：开→允许并显示推理，关→请求模型直接输出正文。 */
     fun toggleThinkingMode() = viewModelScope.launch {
-        val current = settings.value
-        saveSettings(current.copy(thinkingMode = !current.thinkingMode))
+        try {
+            val current = settings.value
+            saveSettings(current.copy(thinkingMode = !current.thinkingMode))
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     /** 主页快捷切换模型，同时刷新模型列表以供后续切换。 */
     fun switchModel(targetModel: String) = viewModelScope.launch {
-        val current = settings.value
-        val trimmed = targetModel.trim()
-        if (trimmed.isBlank() || trimmed == current.model) return@launch
-        container.settings.save(current.copy(model = trimmed))
-        _notice.value = "已切换到 $trimmed"
+        try {
+            val current = settings.value
+            val trimmed = targetModel.trim()
+            if (trimmed.isBlank() || trimmed == current.model) return@launch
+            container.settings.save(current.copy(model = trimmed))
+            _notice.value = "已切换到 $trimmed"
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     /** 将当前模型加入已保存列表（去重） */
     fun saveCurrentModel() = viewModelScope.launch {
-        val current = settings.value
-        val model = current.model.trim()
-        if (model.isBlank()) return@launch
-        val list = current.savedModels.toMutableList()
-        if (list.contains(model)) {
-            _notice.value = "$model 已在列表中"
-            return@launch
+        try {
+            val current = settings.value
+            val model = current.model.trim()
+            if (model.isBlank()) return@launch
+            val list = current.savedModels.toMutableList()
+            if (list.contains(model)) {
+                _notice.value = "$model 已在列表中"
+                return@launch
+            }
+            list.add(model)
+            saveSettings(current.copy(savedModels = list))
+            _notice.value = "已加入 $model"
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
         }
-        list.add(model)
-        saveSettings(current.copy(savedModels = list))
-        _notice.value = "已加入 $model"
     }
 
     /** 从已保存列表中移除一个模型 */
     fun removeSavedModel(modelId: String) = viewModelScope.launch {
-        val current = settings.value
-        saveSettings(current.copy(savedModels = current.savedModels - modelId))
+        try {
+            val current = settings.value
+            saveSettings(current.copy(savedModels = current.savedModels - modelId))
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     fun testConnection(value: ApiSettings) = viewModelScope.launch {
@@ -432,11 +503,17 @@ class AppViewModel(
             performCompression()
         } catch (t: CancellationException) {
             // 压缩中断：已被取消的协程不需要回退
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
         }
     }
 
     fun compressContext() = viewModelScope.launch {
-        performCompression()
+        try {
+            performCompression()
+        } catch (t: Throwable) {
+            _notice.value = friendlyError(t)
+        }
     }
 
     /**
@@ -465,10 +542,14 @@ class AppViewModel(
             val summaryPrompt = "请用中文将以下对话内容压缩为简洁摘要，保留关键信息、人物、情节走向、设定，300 字以内。\n\n$concat"
             val settingsNow = settings.value
             val summaryBuilder = StringBuilder()
+            // 使用 short timeout 的调用方式，避免非流式 API 无限等待
             container.api.chat(
                 settingsNow.copy(stream = false, temperature = 0f),
                 listOf(ApiMessage("user", summaryPrompt)),
-            ).collect { delta -> summaryBuilder.append(delta.content) }
+            ).collect { delta ->
+                val chunk = delta.content
+                if (chunk.isNotBlank()) summaryBuilder.append(chunk)
+            }
             val summary = summaryBuilder.toString()
             if (summary.isBlank()) {
                 _notice.value = "压缩失败：模型未返回内容"
@@ -483,6 +564,8 @@ class AppViewModel(
                 content = "[历史摘要]\n\n$summary",
             ))
             _compressionNotice.value = CompressionNotice(summary = summary, messageId = summaryId)
+        } catch (t: CancellationException) {
+            // 压缩取消是正常场景（如用户同时在发消息），不需要错误提示
         } catch (t: Throwable) {
             _notice.value = friendlyError(t)
         } finally {
@@ -510,36 +593,40 @@ class AppViewModel(
 
     /** 解析并执行 save_knowledge 工具调用。arguments 是模型给出的 JSON 字符串。 */
     private suspend fun handleSaveKnowledgeToolCall(argumentsJson: String) {
-        if (argumentsJson.isBlank()) {
-            _notice.value = "AI 试图写入知识库，但参数为空，已忽略"
-            return
-        }
-        val args = try {
-            org.json.JSONObject(argumentsJson)
+        try {
+            if (argumentsJson.isBlank()) {
+                _notice.value = "AI 试图写入知识库，但参数为空，已忽略"
+                return
+            }
+            val args = try {
+                org.json.JSONObject(argumentsJson)
+            } catch (t: Throwable) {
+                _notice.value = "AI 试图写入知识库但参数解析失败，已忽略"
+                return
+            }
+            val title = args.optString("title", "").trim()
+            val content = args.optString("content", "").trim()
+            if (title.isEmpty() || content.isEmpty()) {
+                _notice.value = "AI 试图写入知识库但缺少标题或内容，已忽略"
+                return
+            }
+            val category = args.optString("category", "设定").takeUnless { it.isBlank() } ?: "设定"
+            val tags = args.optString("tags", "").trim()
+            val isPinned = args.optBoolean("isPinned", false)
+            val now = System.currentTimeMillis()
+            val entity = KnowledgeEntity(
+                title = title.take(64),
+                content = content.take(4000),
+                category = category,
+                tags = tags,
+                isPinned = isPinned,
+                updatedAt = now,
+            )
+            knowledgeDao.upsert(entity)
+            _notice.value = "AI 已写入知识库：$title"
         } catch (t: Throwable) {
-            _notice.value = "AI 试图写入知识库但参数解析失败，已忽略"
-            return
+            _notice.value = "AI 写入知识库失败：${friendlyError(t)}"
         }
-        val title = args.optString("title", "").trim()
-        val content = args.optString("content", "").trim()
-        if (title.isEmpty() || content.isEmpty()) {
-            _notice.value = "AI 试图写入知识库但缺少标题或内容，已忽略"
-            return
-        }
-        val category = args.optString("category", "设定").takeUnless { it.isBlank() } ?: "设定"
-        val tags = args.optString("tags", "").trim()
-        val isPinned = args.optBoolean("isPinned", false)
-        val now = System.currentTimeMillis()
-        val entity = KnowledgeEntity(
-            title = title.take(64),
-            content = content.take(4000),
-            category = category,
-            tags = tags,
-            isPinned = isPinned,
-            updatedAt = now,
-        )
-        knowledgeDao.upsert(entity)
-        _notice.value = "AI 已写入知识库：$title"
     }
 
     fun checkForUpdate(force: Boolean = false) = viewModelScope.launch {
@@ -571,14 +658,15 @@ class AppViewModel(
         }
         _updateState.value = UpdateState.Downloading(0f)
         val outFile = java.io.File(appContext.cacheDir, "updates/moku-update.apk")
-        runCatching {
-            container.update.downloadApk(apkUrl, outFile) { downloaded, total ->
+        try {
+            val file = container.update.downloadApk(apkUrl, outFile) { downloaded, total ->
                 val progress = if (total > 0) downloaded.toFloat() / total else 0f
                 _updateState.value = UpdateState.Downloading(progress)
             }
+            _updateState.value = UpdateState.Ready(file)
+        } catch (t: Throwable) {
+            _updateState.value = UpdateState.Error(friendlyError(t))
         }
-            .onSuccess { file -> _updateState.value = UpdateState.Ready(file) }
-            .onFailure { _updateState.value = UpdateState.Error(friendlyError(it)) }
     }
 
     private fun isNewer(latest: String, current: String): Boolean {

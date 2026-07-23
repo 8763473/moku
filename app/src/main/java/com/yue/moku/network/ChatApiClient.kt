@@ -92,13 +92,15 @@ class ChatApiClient {
                 }
             }
         }
+        // 非流式模式使用短超时客户端，避免无限等待
+        val httpClient = if (settings.stream) client else shortTimeoutClient
         val request = Request.Builder()
             .url(chatUrl(settings.baseUrl))
             .apply { if (settings.apiKey.isNotBlank()) header("Authorization", "Bearer ${settings.apiKey}") }
             .header("Accept", if (settings.stream) "text/event-stream" else "application/json")
             .post(payload.toString().toRequestBody(JSON_MEDIA))
             .build()
-        val call = client.newCall(request)
+        val call = httpClient.newCall(request)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 close(e)
