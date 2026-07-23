@@ -226,14 +226,22 @@ fun ChatScreen(viewModel: AppViewModel) {
                                 },
                                 label = { Text(root.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                                 badge = {
-                                    IconButton(onClick = { viewModel.deleteConversation(root) }, modifier = Modifier.size(36.dp)) {
-                                        Icon(Icons.Default.DeleteOutline, "删除会话", modifier = Modifier.size(18.dp))
+                                    // 删除整棵对话树（含所有子分支）。子分支数量提示。
+                                    val childCount = branchMap[root.id]?.size ?: 0
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (childCount > 0) {
+                                            Text("$childCount", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Spacer(Modifier.width(2.dp))
+                                        }
+                                        IconButton(onClick = { viewModel.deleteConversation(root) }, modifier = Modifier.size(36.dp)) {
+                                            Icon(Icons.Default.DeleteOutline, "删除会话", modifier = Modifier.size(18.dp))
+                                        }
                                     }
                                 },
                                 modifier = Modifier.padding(vertical = 3.dp),
                             )
                         }
-                        // 子分支（缩进显示）
+                        // 子分支（缩进显示），带独立删除按钮
                         branchMap[root.id]?.forEach { branch ->
                             item(key = branch.id) {
                                 NavigationDrawerItem(
@@ -250,7 +258,13 @@ fun ChatScreen(viewModel: AppViewModel) {
                                         }
                                     },
                                     badge = {
-                                        Text("分支", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("分支", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Spacer(Modifier.width(4.dp))
+                                            IconButton(onClick = { viewModel.deleteConversation(branch) }, modifier = Modifier.size(24.dp)) {
+                                                Icon(Icons.Default.DeleteOutline, "删除分支", Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
                                     },
                                     modifier = Modifier.padding(start = 28.dp, top = 1.dp, bottom = 1.dp),
                                 )
